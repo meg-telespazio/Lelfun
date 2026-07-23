@@ -1,0 +1,6 @@
+{
+  "name": "Lelfun",
+  "description": "Plataforma SaaS integral para empresas constructoras y seguimiento de obra, con finanzas, presupuestos, compras, cuotas ajustables, OCR de comprobantes con IA y Marketplace global.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
