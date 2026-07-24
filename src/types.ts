@@ -39,7 +39,9 @@ export enum ProjectStatus {
 }
 
 export enum UnitType {
+  UNIDAD_FUNCIONAL = "UNIDAD_FUNCIONAL",
   DEPARTAMENTO = "DEPARTAMENTO",
+  CASA = "CASA",
   COCHERA = "COCHERA",
   LOCAL = "LOCAL",
   OFICINA = "OFICINA",
@@ -182,6 +184,7 @@ export interface FinancialMovement {
   targetAccountId?: string; // Para transferencias
   counterpartyId?: string;
   categoryId?: string;
+  purchaseRequestId?: string;
   amount: number;
   currency: Currency;
   baseAmount: number; // En moneda base (ej. USD)
@@ -228,6 +231,14 @@ export interface BudgetLine {
   suggestedIncidence?: number; // Generado por el proyector de históricos
   suggestedAmount?: number;
   notes?: string;
+  subitems?: BudgetSubitem[];
+}
+
+export interface BudgetSubitem {
+  id: string;
+  description: string;
+  amount: number;
+  notes?: string;
 }
 
 export interface PurchaseRequest {
@@ -264,6 +275,18 @@ export interface SellableUnit {
   type: UnitType;
   status: UnitStatus;
   surfaceM2: number;
+  coveredSurfaceM2?: number;
+  semiCoveredSurfaceM2?: number;
+  uncoveredSurfaceM2?: number;
+  description?: string;
+  view?: string;
+  orientation?: string;
+  floor?: string;
+  rooms?: number;
+  bedrooms?: number;
+  bathrooms?: number;
+  imageUrls?: string[];
+  financingDescription?: string;
   price: number;
   currency: Currency;
   currentOwnerId?: string;
@@ -274,6 +297,8 @@ export interface SalesContract {
   tenantId: string;
   projectId: string;
   unitId: string;
+  unitIds?: string[];
+  opportunityId?: string;
   customerId: string;
   contractDate: string;
   totalPrice: number;
@@ -283,6 +308,57 @@ export interface SalesContract {
   indexType: IndexType;
   baseIndexValue: number;
   status: "ACTIVE" | "COMPLETED" | "CANCELLED";
+  cashPayment?: number;
+  reinforcements?: number;
+  possessionBalance?: number;
+  financingRate?: number;
+  commissionType?: "PERCENTAGE" | "FIXED";
+  commissionValue?: number;
+}
+
+export type SalesOpportunityStage =
+  | "LEAD"
+  | "CONTACTED"
+  | "VISIT"
+  | "NEGOTIATION"
+  | "RESERVED"
+  | "WON"
+  | "LOST"
+  | "EXPIRED"
+  | "CANCELLED_BY_CLIENT";
+
+export interface SalesOpportunity {
+  id: string;
+  tenantId: string;
+  projectId: string;
+  customerId?: string;
+  unitIds: string[];
+  title: string;
+  stage: SalesOpportunityStage;
+  createdAt: string;
+  updatedAt: string;
+  reservationExpiresAt?: string;
+  basePrice: number;
+  negotiatedPrice: number;
+  currency: Currency;
+  discountAmount: number;
+  downPayment: number;
+  cashPayment: number;
+  installmentCount: number;
+  installmentAmount: number;
+  reinforcements: number;
+  possessionBalance: number;
+  financingRate: number;
+  indexType: IndexType;
+  baseIndexValue: number;
+  commissionType?: "PERCENTAGE" | "FIXED";
+  commissionValue?: number;
+  sellerName?: string;
+  nextAction?: string;
+  nextActionDate?: string;
+  notes?: string;
+  lossReason?: string;
+  documentUrls?: string[];
 }
 
 export interface Installment {
@@ -338,7 +414,8 @@ export interface MaintenanceRequest {
   id: string;
   tenantId: string;
   projectId: string;
-  unitId: string;
+  unitId?: string;
+  customerId?: string;
   reporterName: string;
   reporterContact: string;
   description: string;

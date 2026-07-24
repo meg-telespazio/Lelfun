@@ -4,6 +4,7 @@
  */
 
 import { useState, FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { 
   PurchaseRequest, 
   PurchaseItem, 
@@ -246,6 +247,9 @@ export default function ProcurementPanel({
                       <td className="py-3">
                         <p className="text-slate-800 font-medium">{pr.title}</p>
                         <span className="text-[10px] text-slate-400">Requerido: {pr.requiredDate}</span>
+                        <span className="block text-[10px] text-amber-700">
+                          Categoría: {categories.find(category => category.id === pr.categoryId)?.name || "Sin categoría"}
+                        </span>
                       </td>
                       <td className="py-3 text-center font-mono text-xs font-bold">{pr.items.length}</td>
                       <td className="py-3 text-right font-mono font-bold text-slate-900">
@@ -457,7 +461,7 @@ export default function ProcurementPanel({
       </div>
 
       {/* Creación de Nota de Pedido Modal */}
-      {showAddPr && (
+      {showAddPr && createPortal((
         <div className="fixed inset-0 bg-slate-950/60 flex items-center justify-center p-4 z-50 animate-fade-in text-slate-950">
           <div className="bg-white rounded-xl max-w-lg w-full shadow-2xl overflow-hidden">
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
@@ -586,10 +590,10 @@ export default function ProcurementPanel({
             </form>
           </div>
         </div>
-      )}
+      ), document.body)}
 
       {/* Directorio de Proveedores Modal */}
-      {showSupplierModal && (
+      {showSupplierModal && createPortal((
         <div className="fixed inset-0 bg-slate-950/60 flex items-center justify-center p-4 z-50 animate-fade-in text-slate-900">
           <div className="bg-white rounded-xl max-w-4xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
@@ -732,7 +736,7 @@ export default function ProcurementPanel({
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
     </div>
   );
 }

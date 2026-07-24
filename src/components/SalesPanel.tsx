@@ -4,15 +4,18 @@
  */
 
 import { useState, FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { 
   SellableUnit, 
+  SalesOpportunity,
   SalesContract, 
   Installment, 
   FinancialAccount, 
   InstallmentStatus, 
   IndexType,
   Currency,
-  Counterparty
+  Counterparty,
+  UnitType
 } from "../types.js";
 import { 
   Building2, 
@@ -32,21 +35,25 @@ import {
 
 interface SalesPanelProps {
   units: SellableUnit[];
+  opportunities: SalesOpportunity[];
   contracts: SalesContract[];
   installments: Installment[];
   accounts: FinancialAccount[];
   counterparties: Counterparty[];
   tenantId: string;
+  projectId: string;
   onRefresh: () => void;
 }
 
 export default function SalesPanel({
   units,
+  opportunities,
   contracts,
   installments,
   accounts,
   counterparties,
   tenantId,
+  projectId,
   onRefresh
 }: SalesPanelProps) {
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
@@ -54,6 +61,33 @@ export default function SalesPanel({
   const [isPaying, setIsPaying] = useState(false);
   const [payingInstallmentId, setPayingInstallmentId] = useState<string | null>(null);
   const [selectedBankId, setSelectedBankId] = useState("");
+  const [showUnitModal, setShowUnitModal] = useState(false);
+  const [showOpportunityModal, setShowOpportunityModal] = useState(false);
+  const [unitName, setUnitName] = useState("");
+  const [unitType, setUnitType] = useState<UnitType>(UnitType.DEPARTAMENTO);
+  const [unitDescription, setUnitDescription] = useState("");
+  const [unitSurface, setUnitSurface] = useState("");
+  const [unitView, setUnitView] = useState("");
+  const [unitOrientation, setUnitOrientation] = useState("");
+  const [unitPrice, setUnitPrice] = useState("");
+  const [unitCurrency, setUnitCurrency] = useState(Currency.USD);
+  const [unitFinancing, setUnitFinancing] = useState("");
+  const [unitImages, setUnitImages] = useState<string[]>([]);
+  const [opportunityCustomerId, setOpportunityCustomerId] = useState("");
+  const [opportunityUnitIds, setOpportunityUnitIds] = useState<string[]>([]);
+  const [reservationDays, setReservationDays] = useState("");
+  const [negotiatedPrice, setNegotiatedPrice] = useState("");
+  const [downPayment, setDownPayment] = useState("");
+  const [cashPayment, setCashPayment] = useState("");
+  const [installmentCount, setInstallmentCount] = useState("");
+  const [installmentAmount, setInstallmentAmount] = useState("");
+  const [reinforcements, setReinforcements] = useState("");
+  const [possessionBalance, setPossessionBalance] = useState("");
+  const [financingRate, setFinancingRate] = useState("");
+  const [opportunityIndexType, setOpportunityIndexType] = useState<IndexType>(IndexType.NONE);
+  const [commissionValue, setCommissionValue] = useState("");
+  const [sellerName, setSellerName] = useState("");
+  const [opportunityNotes, setOpportunityNotes] = useState("");
 
   // Client management states
   const [showClientModal, setShowClientModal] = useState(false);
@@ -66,6 +100,79 @@ export default function SalesPanel({
   const [isSubmittingClient, setIsSubmittingClient] = useState(false);
 
   const clients = counterparties.filter(c => c.type === "Cliente");
+  const projectUnits = units.filter(unit => unit.projectId === projectId);
+  const projectOpportunities = opportunities.filter(opportunity => opportunity.projectId === projectId);
+  const selectedOpportunityUnits = projectUnits.filter(unit => opportunityUnitIds.includes(unit.id));
+  const selectedBasePrice = selectedOpportunityUnits.reduce((sum, unit) => sum + unit.price, 0);
+
+  const handleUnitImages = async (files: FileList | null) => {
+    if (!files) return;
+    const encoded = await Promise.all(Array.from(files).slice(0, 6).map(file => new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    })));
+    setUnitImages(encoded);
+  };
+
+  const handleCreateUnit = async (e: FormEvent) => {
+    e.preventDefault();
+    const response = await fetch("/api/sales/units", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId, projectId, name: unitName, type: unitType, description: unitDescription,
+        surfaceM2: Number(unitSurface), view: unitView, orientation: unitOrientation,
+        price: Number(unitPrice), currency: unitCurrency,
+        financingDescription: unitFinancing, imageUrls: unitImages
+      })
+    });
+    if (response.ok) {
+      setShowUnitModal(false);
+      setUnitName(""); setUnitDescription(""); setUnitSurface(""); setUnitPrice(""); setUnitImages([]);
+      onRefresh();
+    }
+  };
+
+  const handleCreateOpportunity = async (e: FormEvent) => {
+    e.preventDefault();
+    const response = await fetch("/api/sales/opportunities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId, projectId, customerId: opportunityCustomerId, unitIds: opportunityUnitIds,
+        reservationDays: Number(reservationDays), negotiatedPrice: Number(negotiatedPrice) || selectedBasePrice,
+        currency: selectedOpportunityUnits[0]?.currency || Currency.USD,
+        downPayment: Number(downPayment), cashPayment: Number(cashPayment),
+        installmentCount: Number(installmentCount), installmentAmount: Number(installmentAmount),
+        reinforcements: Number(reinforcements), possessionBalance: Number(possessionBalance),
+        financingRate: Number(financingRate), indexType: opportunityIndexType,
+        baseIndexValue: opportunityIndexType === IndexType.NONE ? 1 : cacIndexSimulated,
+        commissionType: "PERCENTAGE", commissionValue: Number(commissionValue),
+        sellerName, notes: opportunityNotes
+      })
+    });
+    if (response.ok) {
+      setShowOpportunityModal(false);
+      setOpportunityUnitIds([]); setOpportunityCustomerId(""); setNegotiatedPrice("");
+      onRefresh();
+    }
+  };
+
+  const updateOpportunityStage = async (id: string, stage: SalesOpportunity["stage"]) => {
+    let lossReason = "";
+    if (stage === "LOST" || stage === "CANCELLED_BY_CLIENT") {
+      lossReason = window.prompt("Indique el motivo de cierre de la oportunidad") || "";
+      if (!lossReason) return;
+    }
+    const response = await fetch(`/api/sales/opportunities/${id}/stage`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage, lossReason })
+    });
+    if (response.ok) onRefresh();
+  };
 
   const handleSaveClient = async (e: FormEvent) => {
     e.preventDefault();
@@ -194,19 +301,24 @@ export default function SalesPanel({
           </h3>
           <p className="text-[10px] text-slate-400 mt-0.5">Control de inventario de unidades y cobranzas indexadas por índice de la Cámara de la Construcción (CAC)</p>
         </div>
-        <button
-          onClick={() => setShowClientModal(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 text-xs font-semibold rounded cursor-pointer transition-colors border border-slate-200 shadow-2xs shrink-0 self-start sm:self-auto"
-        >
-          <User className="w-3.5 h-3.5 text-amber-600" /> Directorio de Clientes y Contactos
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => setShowUnitModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 text-white text-xs font-semibold rounded cursor-pointer">
+            <Plus className="w-3.5 h-3.5" /> Cargar unidad
+          </button>
+          <button onClick={() => setShowOpportunityModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded cursor-pointer">
+            <TrendingUp className="w-3.5 h-3.5" /> Nueva oportunidad
+          </button>
+          <button onClick={() => setShowClientModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-700 text-xs font-semibold rounded cursor-pointer border border-slate-200">
+            <User className="w-3.5 h-3.5 text-amber-600" /> Clientes
+          </button>
+        </div>
       </div>
 
       {/* 1. Units Inventory Grid */}
       <div>
         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Inventario de Unidades</h3>
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-          {units.map(unit => (
+          {projectUnits.map(unit => (
             <div 
               key={unit.id} 
               className={`p-3 rounded-lg border text-xs flex flex-col justify-between h-24 shadow-2xs ${
@@ -239,6 +351,52 @@ export default function SalesPanel({
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-xs">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-base font-semibold font-display text-slate-800">Embudo de oportunidades</h3>
+            <p className="text-[10px] text-slate-400">Reservas, negociación y conversión automática a ventas.</p>
+          </div>
+          <span className="text-xs font-mono text-slate-500">{projectOpportunities.length} oportunidades</span>
+        </div>
+        {projectOpportunities.length === 0 ? (
+          <p className="text-xs text-center text-slate-400 py-6">No hay oportunidades para la obra activa.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {projectOpportunities.map(opportunity => {
+              const customer = clients.find(client => client.id === opportunity.customerId);
+              const discountPct = opportunity.basePrice > 0 ? (opportunity.discountAmount / opportunity.basePrice) * 100 : 0;
+              return (
+                <div key={opportunity.id} className="border border-slate-200 rounded-xl p-3 text-xs space-y-2">
+                  <div className="flex justify-between gap-2">
+                    <div>
+                      <p className="font-bold text-slate-800">{customer?.name || "Cliente"}</p>
+                      <p className="text-[10px] text-slate-400">{opportunity.unitIds.map(id => units.find(unit => unit.id === id)?.name).join(" + ")}</p>
+                    </div>
+                    <span className="h-fit px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-bold text-[9px]">{opportunity.stage}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 bg-slate-50 rounded p-2">
+                    <span>Base<br/><strong>{opportunity.currency} {opportunity.basePrice.toLocaleString()}</strong></span>
+                    <span>Oferta<br/><strong className="text-emerald-700">{opportunity.currency} {opportunity.negotiatedPrice.toLocaleString()}</strong></span>
+                    <span>Descuento<br/><strong>{discountPct.toFixed(2)}%</strong></span>
+                    <span>Financiación<br/><strong>{opportunity.installmentCount} cuotas · {opportunity.financingRate}%</strong></span>
+                  </div>
+                  {opportunity.reservationExpiresAt && <p className="text-[10px] text-rose-600">Reserva hasta {new Date(opportunity.reservationExpiresAt).toLocaleDateString("es-AR")}</p>}
+                  {!["WON", "LOST", "EXPIRED", "CANCELLED_BY_CLIENT"].includes(opportunity.stage) && (
+                    <div className="flex flex-wrap gap-1">
+                      <button onClick={() => updateOpportunityStage(opportunity.id, "NEGOTIATION")} className="px-2 py-1 bg-slate-100 rounded cursor-pointer">Negociación</button>
+                      <button onClick={() => updateOpportunityStage(opportunity.id, "WON")} className="px-2 py-1 bg-emerald-600 text-white rounded cursor-pointer">Ganada</button>
+                      <button onClick={() => updateOpportunityStage(opportunity.id, "LOST")} className="px-2 py-1 bg-rose-50 text-rose-700 rounded cursor-pointer">Perdida</button>
+                      <button onClick={() => updateOpportunityStage(opportunity.id, "CANCELLED_BY_CLIENT")} className="px-2 py-1 bg-slate-100 text-slate-600 rounded cursor-pointer">Canceló cliente</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -391,6 +549,51 @@ export default function SalesPanel({
         </div>
       </div>
 
+      {showUnitModal && createPortal((
+        <div className="fixed inset-0 z-50 bg-slate-950/60 p-4 flex items-center justify-center text-slate-900">
+          <form onSubmit={handleCreateUnit} className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-5 grid grid-cols-2 gap-3 text-xs">
+            <div className="col-span-2 flex justify-between"><h3 className="font-bold text-base">Cargar unidad comercializable</h3><button type="button" onClick={() => setShowUnitModal(false)}><X className="w-5 h-5"/></button></div>
+            <label className="col-span-2">Nombre / Código<input required value={unitName} onChange={e => setUnitName(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            <label>Tipo<select value={unitType} onChange={e => setUnitType(e.target.value as UnitType)} className="mt-1 w-full border rounded p-2 bg-white">{Object.values(UnitType).map(type => <option key={type}>{type}</option>)}</select></label>
+            <label>Superficie m²<input required type="number" value={unitSurface} onChange={e => setUnitSurface(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            <label>Vista<input value={unitView} onChange={e => setUnitView(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            <label>Orientación<input value={unitOrientation} onChange={e => setUnitOrientation(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            <label className="col-span-2">Descripción<textarea value={unitDescription} onChange={e => setUnitDescription(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            <label>Precio base<input required type="number" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            <label>Moneda<select value={unitCurrency} onChange={e => setUnitCurrency(e.target.value as Currency)} className="mt-1 w-full border rounded p-2 bg-white">{Object.values(Currency).map(value => <option key={value}>{value}</option>)}</select></label>
+            <label className="col-span-2">Financiación<textarea value={unitFinancing} onChange={e => setUnitFinancing(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            <label className="col-span-2">Fotos/renders (máximo 6)<input type="file" accept="image/*" multiple onChange={e => handleUnitImages(e.target.files)} className="mt-1 w-full border rounded p-2"/></label>
+            <div className="col-span-2 flex justify-end gap-2"><button type="button" onClick={() => setShowUnitModal(false)} className="px-4 py-2 bg-slate-100 rounded">Cancelar</button><button className="px-4 py-2 bg-amber-600 text-white rounded">Guardar</button></div>
+          </form>
+        </div>
+      ), document.body)}
+
+      {showOpportunityModal && createPortal((
+        <div className="fixed inset-0 z-50 bg-slate-950/60 p-4 flex items-center justify-center text-slate-900">
+          <form onSubmit={handleCreateOpportunity} className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto p-5 space-y-4 text-xs">
+            <div className="flex justify-between"><h3 className="font-bold text-base">Nueva oportunidad comercial</h3><button type="button" onClick={() => setShowOpportunityModal(false)}><X className="w-5 h-5"/></button></div>
+            <div className="grid grid-cols-2 gap-3"><label>Cliente<select required value={opportunityCustomerId} onChange={e => setOpportunityCustomerId(e.target.value)} className="mt-1 w-full border rounded p-2 bg-white"><option value="">Seleccionar...</option>{clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label><label>Días de reserva<input type="number" min="0" value={reservationDays} onChange={e => setReservationDays(e.target.value)} className="mt-1 w-full border rounded p-2"/></label></div>
+            <div><b>Unidades incluidas</b><div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">{projectUnits.filter(unit => unit.status === "AVAILABLE").map(unit => <label key={unit.id} className="border rounded p-2 flex gap-2"><input type="checkbox" checked={opportunityUnitIds.includes(unit.id)} onChange={e => setOpportunityUnitIds(e.target.checked ? [...opportunityUnitIds, unit.id] : opportunityUnitIds.filter(id => id !== unit.id))}/>{unit.name}</label>)}</div></div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-slate-50 p-3 rounded">
+              <label>Precio negociado<input type="number" value={negotiatedPrice} onChange={e => setNegotiatedPrice(e.target.value)} placeholder={String(selectedBasePrice)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Pago contado<input type="number" value={cashPayment} onChange={e => setCashPayment(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Anticipo<input type="number" value={downPayment} onChange={e => setDownPayment(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Cuotas<input type="number" value={installmentCount} onChange={e => setInstallmentCount(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Monto cuota<input type="number" value={installmentAmount} onChange={e => setInstallmentAmount(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Refuerzos<input type="number" value={reinforcements} onChange={e => setReinforcements(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Saldo posesión<input type="number" value={possessionBalance} onChange={e => setPossessionBalance(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Tasa %<input type="number" value={financingRate} onChange={e => setFinancingRate(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Ajuste<select value={opportunityIndexType} onChange={e => setOpportunityIndexType(e.target.value as IndexType)} className="mt-1 w-full border rounded p-2">{Object.values(IndexType).map(value => <option key={value}>{value}</option>)}</select></label>
+              <label>Comisión %<input type="number" value={commissionValue} onChange={e => setCommissionValue(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+              <label>Ejecutivo<input value={sellerName} onChange={e => setSellerName(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            </div>
+            <div className="grid grid-cols-3 border rounded p-3"><span>Base <b className="block">{selectedBasePrice.toLocaleString()}</b></span><span>Oferta <b className="block text-emerald-700">{(Number(negotiatedPrice) || selectedBasePrice).toLocaleString()}</b></span><span>Descuento <b className="block text-rose-600">{selectedBasePrice ? (((selectedBasePrice - (Number(negotiatedPrice) || selectedBasePrice)) / selectedBasePrice) * 100).toFixed(2) : 0}%</b></span></div>
+            <label>Notas<textarea value={opportunityNotes} onChange={e => setOpportunityNotes(e.target.value)} className="mt-1 w-full border rounded p-2"/></label>
+            <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowOpportunityModal(false)} className="px-4 py-2 bg-slate-100 rounded">Cancelar</button><button disabled={!opportunityCustomerId || !opportunityUnitIds.length} className="px-4 py-2 bg-emerald-600 disabled:bg-slate-300 text-white rounded">Crear oportunidad</button></div>
+          </form>
+        </div>
+      ), document.body)}
+
       {/* Pagar Cuota Dialog Modal */}
       {isPaying && payingInstallmentId && (
         <div className="fixed inset-0 bg-slate-950/60 flex items-center justify-center p-4 z-50 animate-fade-in text-slate-900">
@@ -449,7 +652,7 @@ export default function SalesPanel({
       )}
 
       {/* Directorio de Clientes y Contactos Modal */}
-      {showClientModal && (
+      {showClientModal && createPortal((
         <div className="fixed inset-0 bg-slate-950/60 flex items-center justify-center p-4 z-50 animate-fade-in text-slate-900">
           <div className="bg-white rounded-xl max-w-4xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
@@ -592,7 +795,7 @@ export default function SalesPanel({
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
     </div>
   );
 }
