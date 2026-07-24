@@ -29,6 +29,7 @@ import {
   BudgetLine,
   PurchaseRequest,
   SellableUnit,
+  SalesOpportunity,
   SalesContract,
   Installment,
   OcrDocument,
@@ -213,6 +214,63 @@ let exchangeRates = {
   CAC_INDEX_CURRENT: 2845.6,
   INFLATION_INDEX_CURRENT: 310.4
 };
+
+interface DailyOfficialExchangeRate {
+  date: string;
+  currency: "USD";
+  buy: number;
+  sell: number;
+  updatedAt: string;
+  source: "dolarapi-oficial";
+}
+
+let officialExchangeRateHistory: DailyOfficialExchangeRate[] = [];
+
+async function getDailyOfficialRate(date = new Date().toISOString().split("T")[0]) {
+  const stored = officialExchangeRateHistory.find(rate => rate.date === date);
+  if (stored) return stored;
+
+  const today = new Date().toISOString().split("T")[0];
+  if (date !== today) {
+    const prior = officialExchangeRateHistory
+      .filter(rate => rate.date <= date)
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
+    if (prior) return prior;
+  }
+
+  const response = await fetch("https://dolarapi.com/v1/dolares/oficial");
+  if (!response.ok) throw new Error(`DolarAPI respondió ${response.status}`);
+  const data = await response.json() as {
+    compra: number;
+    venta: number;
+    fechaActualizacion: string;
+  };
+
+  const snapshot: DailyOfficialExchangeRate = {
+    date: today,
+    currency: "USD",
+    buy: Number(data.compra),
+    sell: Number(data.venta),
+    updatedAt: data.fechaActualizacion,
+    source: "dolarapi-oficial"
+  };
+  officialExchangeRateHistory = officialExchangeRateHistory.filter(rate => rate.date !== today);
+  officialExchangeRateHistory.push(snapshot);
+  exchangeRates.ARS_USD_OFICIAL = snapshot.sell;
+  persistAppState();
+  return snapshot;
+}
+
+function convertAmount(amount: number, from: Currency, to: Currency, arsPerUsd: number) {
+  if (from === to) return amount;
+  if (from === Currency.ARS && to === Currency.USD) return amount / arsPerUsd;
+  if (from === Currency.USD && to === Currency.ARS) return amount * arsPerUsd;
+  if (from === Currency.BRL && to === Currency.USD) return amount / exchangeRates.BRL_USD;
+  if (from === Currency.USD && to === Currency.BRL) return amount * exchangeRates.BRL_USD;
+  if (from === Currency.ARS && to === Currency.BRL) return (amount / arsPerUsd) * exchangeRates.BRL_USD;
+  if (from === Currency.BRL && to === Currency.ARS) return (amount / exchangeRates.BRL_USD) * arsPerUsd;
+  return amount;
+}
 
 // Seed Tables
 let projects: Project[] = [
@@ -582,26 +640,133 @@ let cashCounts: CashCount[] = [
   }
 ];
 
-// Historical budgets for projection (Torre Alvear has current, Palermo and Madero are used as database of Closed historical costs)
+type BudgetTemplateItem = { name: string; incidence: number };
+
+// Matrices tomadas de las hojas CASAS y EDIFICIOS de Tr3sR Contabilidad v12.0.
+const HOUSE_BUDGET_TEMPLATE: BudgetTemplateItem[] = [
+  ["Albañilería MDO", 24.40], ["Albañilería Materiales", 9.75],
+  ["Estructura Hormigón", 7.40], ["Carpintería Aluminio", 6.80],
+  ["Estructura Acero", 6.00], ["Gastos Municipales", 5.60],
+  ["Pisos y Revestimientos", 4.20], ["Jardinería", 3.20],
+  ["Electricidad Materiales", 2.80], ["Plomería Sanitarios", 2.80],
+  ["Pintura MDO", 2.75], ["Excavación", 2.70], ["Cocina Muebles", 2.40],
+  ["Estructura Maderas", 2.00], ["Electricidad MDO", 1.80],
+  ["Carpintería Puertas", 1.40], ["Cocina Mesadas", 1.30],
+  ["Plomería MDO", 1.30], ["Obra Generales", 1.25], ["Yesería MDO", 1.25],
+  ["Amoblamientos", 1.00], ["Calefacción", 1.00], ["Piscina", 1.00],
+  ["Pintura Materiales", 0.90], ["Cocina Artefactos", 0.85],
+  ["Plomería Materiales", 0.85], ["Yesería Materiales", 0.60],
+  ["Herramientas", 0.50], ["Aire Acondicionado", 0.45], ["Zinguería", 0.40],
+  ["Plomería Termotanques", 0.40], ["Estructura Generales", 0.35],
+  ["Herrería", 0.25], ["Plomería Bombas", 0.20], ["Cerrajería", 0.15]
+].map(([name, incidence]) => ({ name: String(name), incidence: Number(incidence) }));
+
+const BUILDING_BUDGET_TEMPLATE: BudgetTemplateItem[] = [
+  ["Personal Sueldos", 18.40], ["Albañilería Materiales", 8.46],
+  ["Estructura Hormigón", 5.40], ["Impuestos Generales", 4.98],
+  ["Estructura Acero", 4.74], ["Gastos Municipales", 3.88],
+  ["Carpintería Aluminio", 3.80], ["Plomería Materiales", 3.60],
+  ["Ascensor", 3.50], ["Pintura MDO", 2.75],
+  ["Pisos y Revestimientos", 2.57], ["Plomería MDO", 2.44],
+  ["Electricidad MDO", 2.42], ["Electricidad Materiales", 2.34],
+  ["Plomería Sanitarios", 2.30], ["Herrería", 2.18],
+  ["Empresa Generales", 1.87], ["Herramientas", 1.78],
+  ["Carpintería Puertas", 1.78], ["Cocina Artefactos", 1.75],
+  ["Obra Generales", 1.72], ["Cocina Muebles", 1.68], ["Excavación", 1.40],
+  ["Yesería MDO", 1.36], ["Pintura Materiales", 1.32],
+  ["Honorarios Escribanía", 1.20], ["Estructura Maderas", 1.16],
+  ["Plomería Bombas", 1.08], ["Comercialización", 1.00],
+  ["Amoblamientos", 1.00], ["Plomería Termotanques", 0.98],
+  ["Higiene y Seguridad", 0.72], ["Reclamos", 0.68], ["Zinguería", 0.60],
+  ["Cerrajería", 0.58], ["Yesería Materiales", 0.54], ["Demolición", 0.44],
+  ["Honorarios Contaduría", 0.40], ["Aire Acondicionado", 0.38],
+  ["Jardinería", 0.28], ["Cocina Mesadas", 0.26],
+  ["Estructura Generales", 0.16], ["Honorarios Abogacía", 0.12],
+  ["Calefacción", 0.00]
+].map(([name, incidence]) => ({ name: String(name), incidence: Number(incidence) }));
+
+function getBudgetTemplate(constructionType?: string) {
+  return (constructionType || "").toLocaleLowerCase("es").includes("casa")
+    ? HOUSE_BUDGET_TEMPLATE
+    : BUILDING_BUDGET_TEMPLATE;
+}
+
+function createReferenceBudgetLines(project: Project): BudgetLine[] {
+  const template = getBudgetTemplate(project.constructionType);
+  const templateName = template === HOUSE_BUDGET_TEMPLATE ? "Casa" : "Edificio";
+
+  return template.map((item, index) => ({
+    id: `bl-${project.id}-${index + 1}`,
+    projectId: project.id,
+    categoryId: `ref-${templateName.toLowerCase()}-${index + 1}`,
+    code: String(index + 1).padStart(2, "0"),
+    name: item.name,
+    amount: Number(((project.estimatedTotalCost * item.incidence) / 100).toFixed(2)),
+    incidence: item.incidence,
+    notes: `Plantilla de referencia ${templateName} · Tr3sR Contabilidad v12.0`,
+    subitems: []
+  }));
+}
+
 let budgetLines: BudgetLine[] = [
-  // Torre Alvear (Project Alvear - active budget)
-  { id: "bl-1", projectId: "proj-alvear", categoryId: "cat-1", code: "01", name: "Trabajos Preliminares", amount: 882000, incidence: 6.0, suggestedIncidence: 5.5, suggestedAmount: 808500, notes: "Ajustado con excavación profunda" },
-  { id: "bl-2", projectId: "proj-alvear", categoryId: "cat-2", code: "02", name: "Estructura de Hormigón", amount: 5880000, incidence: 40.0, suggestedIncidence: 42.0, suggestedAmount: 6174000, notes: "Incluye losas postensadas" },
-  { id: "bl-3", projectId: "proj-alvear", categoryId: "cat-3", code: "03", name: "Instalaciones Básicas", amount: 3675000, incidence: 25.0, suggestedIncidence: 24.5, suggestedAmount: 3601500, notes: "Alineado con cotización contratista" },
-  { id: "bl-4", projectId: "proj-alvear", categoryId: "cat-4", code: "04", name: "Terminaciones", amount: 4263000, incidence: 29.0, suggestedIncidence: 28.0, suggestedAmount: 4116000, notes: "Calidad premium importada" },
-
-  // Palermo Zen (Historical database of real costs - Project Palermo Historico)
-  { id: "bl-p1", projectId: "proj-palermo-historico", categoryId: "cat-1", code: "01", name: "Trabajos Preliminares", amount: 360000, incidence: 5.0 }, // 5% of 7.2M
-  { id: "bl-p2", projectId: "proj-palermo-historico", categoryId: "cat-2", code: "02", name: "Estructura de Hormigón", amount: 3096000, incidence: 43.0 }, // 43%
-  { id: "bl-p3", projectId: "proj-palermo-historico", categoryId: "cat-3", code: "03", name: "Instalaciones Básicas", amount: 1656000, incidence: 23.0 }, // 23%
-  { id: "bl-p4", projectId: "proj-palermo-historico", categoryId: "cat-4", code: "04", name: "Terminaciones", amount: 2088000, incidence: 29.0 }, // 29%
-
-  // Madero Office (Historical database of real costs - Project Madero Historico)
-  { id: "bl-m1", projectId: "proj-madero-historico", categoryId: "cat-1", code: "01", name: "Trabajos Preliminares", amount: 1512000, incidence: 6.0 }, // 6% of 25.2M
-  { id: "bl-m2", projectId: "proj-madero-historico", categoryId: "cat-2", code: "02", name: "Estructura de Hormigón", amount: 10332000, incidence: 41.0 }, // 41%
-  { id: "bl-m3", projectId: "proj-madero-historico", categoryId: "cat-3", code: "03", name: "Instalaciones Básicas", amount: 6552000, incidence: 26.0 }, // 26%
-  { id: "bl-m4", projectId: "proj-madero-historico", categoryId: "cat-4", code: "04", name: "Terminaciones", amount: 6804000, incidence: 27.0 } // 27%
+  ...createReferenceBudgetLines(projects.find(project => project.id === "proj-alvear")!)
 ];
+
+// Durable local persistence for operational data.
+// Supabase currently provides Auth only; these entities can be migrated when its tables exist.
+const APP_STATE_FILE = path.join(process.cwd(), "custom-app-state.json");
+
+function loadPersistedAppState() {
+  try {
+    if (!fs.existsSync(APP_STATE_FILE)) return;
+    const persisted = JSON.parse(fs.readFileSync(APP_STATE_FILE, "utf-8"));
+    if (Array.isArray(persisted.projects)) projects = persisted.projects;
+    if (Array.isArray(persisted.budgetLines)) budgetLines = persisted.budgetLines;
+    if (Array.isArray(persisted.costCategories)) costCategories = persisted.costCategories;
+    if (Array.isArray(persisted.purchaseRequests)) purchaseRequests = persisted.purchaseRequests;
+    if (Array.isArray(persisted.movements)) movements = persisted.movements;
+    if (Array.isArray(persisted.accounts)) accounts = persisted.accounts;
+    if (Array.isArray(persisted.cashCounts)) cashCounts = persisted.cashCounts;
+    if (Array.isArray(persisted.officialExchangeRateHistory)) {
+      officialExchangeRateHistory = persisted.officialExchangeRateHistory;
+    }
+    if (Array.isArray(persisted.sellableUnits)) sellableUnits = persisted.sellableUnits;
+    if (Array.isArray(persisted.salesOpportunities)) salesOpportunities = persisted.salesOpportunities;
+    if (Array.isArray(persisted.salesContracts)) salesContracts = persisted.salesContracts;
+    if (Array.isArray(persisted.installments)) installments = persisted.installments;
+  } catch (error) {
+    console.error("Error loading persisted application state:", error);
+  }
+}
+
+function persistAppState() {
+  try {
+    const temporaryFile = `${APP_STATE_FILE}.tmp`;
+    fs.writeFileSync(
+      temporaryFile,
+      JSON.stringify({
+        version: 4,
+        projects,
+        budgetLines,
+        costCategories,
+        purchaseRequests,
+        movements,
+        accounts,
+        cashCounts,
+        officialExchangeRateHistory,
+        salesOpportunities,
+        sellableUnits,
+        salesContracts,
+        installments
+      }, null, 2),
+      "utf-8"
+    );
+    fs.renameSync(temporaryFile, APP_STATE_FILE);
+  } catch (error) {
+    console.error("Error saving persisted application state:", error);
+    throw error;
+  }
+}
 
 let purchaseRequests: PurchaseRequest[] = [
   {
@@ -657,6 +822,8 @@ let sellableUnits: SellableUnit[] = [
   { id: "unit-9", projectId: "proj-jardins", name: "Apt 101 - Edificio Jardins", type: UnitType.DEPARTAMENTO, status: UnitStatus.SOLD, surfaceM2: 95, price: 920000, currency: Currency.BRL, currentOwnerId: "cnt-11" },
   { id: "unit-10", projectId: "proj-jardins", name: "Apt 102 - Edificio Jardins", type: UnitType.DEPARTAMENTO, status: UnitStatus.AVAILABLE, surfaceM2: 110, price: 1150000, currency: Currency.BRL }
 ];
+
+let salesOpportunities: SalesOpportunity[] = [];
 
 let salesContracts: SalesContract[] = [
   {
@@ -768,6 +935,8 @@ let installments: Installment[] = [
     status: InstallmentStatus.PENDING
   }
 ];
+
+loadPersistedAppState();
 
 let ocrDocuments: OcrDocument[] = [
   {
@@ -1057,8 +1226,14 @@ app.get("/api/exchange-rates", (req: Request, res: Response) => {
   res.json(exchangeRates);
 });
 
+app.get("/api/exchange-rates/history", (req: Request, res: Response) => {
+  res.json(
+    [...officialExchangeRateHistory].sort((a, b) => b.date.localeCompare(a.date))
+  );
+});
+
 // 3. Central Synchronization State Endpoint (returns isolated tenant data)
-app.get("/api/state", (req: Request, res: Response) => {
+app.get("/api/state", async (req: Request, res: Response) => {
   const tenantId = req.query.tenantId as string;
   if (!tenantId) {
     return res.status(400).json({ error: "Missing tenantId parameter" });
@@ -1070,7 +1245,7 @@ app.get("/api/state", (req: Request, res: Response) => {
 
   const tenantAccounts = accounts.filter(a => a.tenantId === tenantId);
   const tenantCounterparties = counterparties.filter(c => c.tenantId === tenantId);
-  const tenantCategories = costCategories.filter(c => c.tenantId === tenantId);
+  let tenantCategories = costCategories.filter(c => c.tenantId === tenantId);
   
   // Filter movements belonging directly to tenant accounts
   const tenantAccountIds = tenantAccounts.map(a => a.id);
@@ -1078,8 +1253,42 @@ app.get("/api/state", (req: Request, res: Response) => {
   const tenantCashCounts = cashCounts.filter(cc => tenantAccountIds.includes(cc.accountId));
 
   const tenantBudgetLines = budgetLines.filter(bl => tenantProjectIds.includes(bl.projectId));
+  if (tenantCategories.length === 0 && tenantBudgetLines.length > 0) {
+    const categoriesByName = new Map<string, CostCategory>();
+    tenantBudgetLines.forEach((line, index) => {
+      if (!categoriesByName.has(line.name)) {
+        categoriesByName.set(line.name, {
+          id: `cat-${tenantId}-${index + 1}`,
+          tenantId,
+          code: line.code || String(index + 1).padStart(2, "0"),
+          name: line.name,
+          isLeaf: true
+        });
+      }
+    });
+    tenantCategories = Array.from(categoriesByName.values());
+    costCategories.push(...tenantCategories);
+    persistAppState();
+  }
   const tenantPurchaseRequests = purchaseRequests.filter(pr => pr.tenantId === tenantId);
   const tenantUnits = sellableUnits.filter(u => tenantProjectIds.includes(u.projectId));
+  const now = new Date();
+  salesOpportunities.forEach(opportunity => {
+    if (
+      opportunity.tenantId === tenantId &&
+      opportunity.stage === "RESERVED" &&
+      opportunity.reservationExpiresAt &&
+      new Date(opportunity.reservationExpiresAt) < now
+    ) {
+      opportunity.stage = "EXPIRED";
+      opportunity.updatedAt = now.toISOString();
+      opportunity.unitIds.forEach(unitId => {
+        const unit = sellableUnits.find(item => item.id === unitId);
+        if (unit?.status === UnitStatus.RESERVED) unit.status = UnitStatus.AVAILABLE;
+      });
+    }
+  });
+  const tenantOpportunities = salesOpportunities.filter(opportunity => opportunity.tenantId === tenantId);
   
   const tenantContractIds = salesContracts.filter(sc => sc.tenantId === tenantId).map(c => c.id);
   const tenantContracts = salesContracts.filter(sc => sc.tenantId === tenantId);
@@ -1093,6 +1302,20 @@ app.get("/api/state", (req: Request, res: Response) => {
   const tenantTenders = publicTenders.filter(t => t.tenantId === tenantId);
 
   const tenantProfile = tenants.find(t => t.id === tenantId) || tenants[0];
+  let currentOfficialRate: DailyOfficialExchangeRate | null = null;
+  try {
+    currentOfficialRate = await getDailyOfficialRate();
+  } catch (error) {
+    console.error("No se pudo actualizar la cotización oficial:", error);
+    currentOfficialRate = officialExchangeRateHistory
+      .sort((a, b) => b.date.localeCompare(a.date))[0] || null;
+  }
+  const consolidationCurrency = tenantProfile.defaultCurrency;
+  const officialSellRate = currentOfficialRate?.sell || exchangeRates.ARS_USD_OFICIAL;
+  const consolidatedLiquidity = tenantAccounts.reduce(
+    (total, account) => total + convertAmount(account.balance, account.currency, consolidationCurrency, officialSellRate),
+    0
+  );
 
   res.json({
     projects: tenantProjects,
@@ -1104,6 +1327,7 @@ app.get("/api/state", (req: Request, res: Response) => {
     budgetLines: tenantBudgetLines,
     purchaseRequests: tenantPurchaseRequests,
     units: tenantUnits,
+    opportunities: tenantOpportunities,
     contracts: tenantContracts,
     installments: tenantInstallments,
     documents: tenantDocuments,
@@ -1111,7 +1335,17 @@ app.get("/api/state", (req: Request, res: Response) => {
     maintenanceRequests: tenantMaintenance,
     tenders: tenantTenders,
     marketplaceSuppliers, // Global catalog is public
-    tenantProfile
+    tenantProfile,
+    exchangeRates: {
+      ARS_USD_OFICIAL: officialSellRate,
+      BRL_USD: exchangeRates.BRL_USD,
+      date: currentOfficialRate?.date,
+      updatedAt: currentOfficialRate?.updatedAt
+    },
+    consolidation: {
+      currency: consolidationCurrency,
+      totalLiquidity: consolidatedLiquidity
+    }
   });
 });
 
@@ -1196,7 +1430,34 @@ app.post("/api/tenants/:id/accounts", (req: Request, res: Response) => {
   };
 
   accounts.push(newAccount);
+  persistAppState();
   res.status(201).json(newAccount);
+});
+
+app.put("/api/tenants/:tenantId/accounts/:accountId", (req: Request, res: Response) => {
+  const { tenantId, accountId } = req.params;
+  const { name, currency, balance } = req.body;
+
+  if (!name || !currency || balance === undefined || Number.isNaN(Number(balance))) {
+    return res.status(400).json({ error: "Nombre, moneda y saldo válidos son requeridos" });
+  }
+
+  const tenant = tenants.find(t => t.id === tenantId);
+  if (!tenant) {
+    return res.status(404).json({ error: "Empresa no encontrada" });
+  }
+
+  const account = accounts.find(a => a.id === accountId && a.tenantId === tenantId);
+  if (!account) {
+    return res.status(404).json({ error: "Cuenta no encontrada para esta empresa" });
+  }
+
+  account.name = String(name).trim();
+  account.currency = currency as Currency;
+  account.balance = Number(balance);
+  persistAppState();
+
+  res.json(account);
 });
 
 app.post("/api/tenants/:id/users", (req: Request, res: Response) => {
@@ -1230,11 +1491,34 @@ app.post("/api/tenants/:id/users", (req: Request, res: Response) => {
 });
 
 // 4. Create Financial Movement
-app.post("/api/movements", (req: Request, res: Response) => {
+app.post("/api/movements", async (req: Request, res: Response) => {
   const movementData = req.body;
   if (!movementData.tenantId || !movementData.accountId || !movementData.amount || !movementData.type) {
     return res.status(400).json({ error: "Missing required fields" });
   }
+
+  if (movementData.purchaseRequestId) {
+    const linkedRequest = purchaseRequests.find(pr => pr.id === movementData.purchaseRequestId);
+    if (
+      movementData.type !== MovementType.EGRESO ||
+      !linkedRequest ||
+      linkedRequest.tenantId !== movementData.tenantId ||
+      (movementData.projectId && linkedRequest.projectId !== movementData.projectId)
+    ) {
+      return res.status(400).json({ error: "Invalid purchase request association" });
+    }
+  }
+
+  const tenant = tenants.find(t => t.id === movementData.tenantId);
+  const consolidationCurrency = tenant?.defaultCurrency || Currency.USD;
+  const movementDate = movementData.date || new Date().toISOString().split("T")[0];
+  let dailyRate: DailyOfficialExchangeRate;
+  try {
+    dailyRate = await getDailyOfficialRate(movementDate);
+  } catch (error) {
+    return res.status(503).json({ error: "No se pudo obtener el tipo de cambio oficial para registrar el movimiento" });
+  }
+  const movementAmount = Number(movementData.amount);
 
   // Generate ID
   const newMovement: FinancialMovement = {
@@ -1245,19 +1529,26 @@ app.post("/api/movements", (req: Request, res: Response) => {
     targetAccountId: movementData.targetAccountId,
     counterpartyId: movementData.counterpartyId,
     categoryId: movementData.categoryId,
-    amount: Number(movementData.amount),
+    purchaseRequestId: movementData.purchaseRequestId,
+    amount: movementAmount,
     currency: movementData.currency || Currency.USD,
-    baseAmount: Number(movementData.baseAmount) || Number(movementData.amount),
-    exchangeRate: Number(movementData.exchangeRate) || 1.0,
-    exchangeRateDate: movementData.exchangeRateDate || new Date().toISOString().split("T")[0],
+    baseAmount: convertAmount(
+      movementAmount,
+      movementData.currency || Currency.USD,
+      consolidationCurrency,
+      dailyRate.sell
+    ),
+    exchangeRate: dailyRate.sell,
+    exchangeRateDate: dailyRate.date,
     type: movementData.type,
     description: movementData.description || "",
     status: movementData.status || MovementStatus.DRAFT,
-    date: movementData.date || new Date().toISOString().split("T")[0],
+    date: movementDate,
     performedBy: movementData.performedBy || "Administración Central"
   };
 
   movements.unshift(newMovement);
+  persistAppState();
 
   // If POSTED directly, update account balance immediately
   if (newMovement.status === MovementStatus.POSTED) {
@@ -1291,6 +1582,7 @@ app.put("/api/movements/:id/status", (req: Request, res: Response) => {
     revertMovementFromBalance(mov);
   }
 
+  persistAppState();
   res.json(mov);
 });
 
@@ -1368,11 +1660,12 @@ app.post("/api/cash-counts", (req: Request, res: Response) => {
   };
 
   cashCounts.unshift(newCount);
+  persistAppState();
   res.status(201).json(newCount);
 });
 
 // 7. Approve Cash Count (Balances update to Physical Balance if differences found)
-app.put("/api/cash-counts/:id/approve", (req: Request, res: Response) => {
+app.put("/api/cash-counts/:id/approve", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { approvedBy } = req.body;
 
@@ -1388,6 +1681,14 @@ app.put("/api/cash-counts/:id/approve", (req: Request, res: Response) => {
   if (count.difference !== 0) {
     const account = accounts.find(a => a.id === count.accountId);
     if (account) {
+      const tenant = tenants.find(t => t.id === count.tenantId);
+      const consolidationCurrency = tenant?.defaultCurrency || Currency.USD;
+      let dailyRate: DailyOfficialExchangeRate;
+      try {
+        dailyRate = await getDailyOfficialRate(count.countDate);
+      } catch (error) {
+        return res.status(503).json({ error: "No se pudo obtener el tipo de cambio oficial del arqueo" });
+      }
       // Create a compensatory movement automatically
       const adjustmentMovement: FinancialMovement = {
         id: `mov-adj-${Date.now()}`,
@@ -1396,9 +1697,14 @@ app.put("/api/cash-counts/:id/approve", (req: Request, res: Response) => {
         accountId: count.accountId,
         amount: Math.abs(count.difference),
         currency: count.currency,
-        baseAmount: Math.abs(count.difference),
-        exchangeRate: 1.0,
-        exchangeRateDate: count.countDate,
+        baseAmount: convertAmount(
+          Math.abs(count.difference),
+          count.currency,
+          consolidationCurrency,
+          dailyRate.sell
+        ),
+        exchangeRate: dailyRate.sell,
+        exchangeRateDate: dailyRate.date,
         type: count.difference > 0 ? MovementType.INGRESO : MovementType.EGRESO,
         description: `Ajuste automático de arqueo de caja #${count.id} - Conciliación`,
         status: MovementStatus.POSTED,
@@ -1413,13 +1719,14 @@ app.put("/api/cash-counts/:id/approve", (req: Request, res: Response) => {
     }
   }
 
+  persistAppState();
   res.json(count);
 });
 
 // 8. Create Purchase Request
 app.post("/api/purchase-requests", (req: Request, res: Response) => {
   const prData = req.body;
-  if (!prData.tenantId || !prData.projectId || !prData.title || !prData.items) {
+  if (!prData.tenantId || !prData.projectId || !prData.title || !prData.categoryId || !prData.items) {
     return res.status(400).json({ error: "Missing required purchase fields" });
   }
 
@@ -1452,11 +1759,12 @@ app.post("/api/purchase-requests", (req: Request, res: Response) => {
   };
 
   purchaseRequests.unshift(newPr);
+  persistAppState();
   res.status(201).json(newPr);
 });
 
 // 9. Process Purchase Flow (Approve -> RFQ -> Order -> Receive -> Invoice)
-app.put("/api/purchase-requests/:id/flow", (req: Request, res: Response) => {
+app.put("/api/purchase-requests/:id/flow", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { action, supplierId, itemsActualPrices, receivedQuantities } = req.body;
 
@@ -1505,6 +1813,10 @@ app.put("/api/purchase-requests/:id/flow", (req: Request, res: Response) => {
     const defaultAcc = accounts.find(a => a.tenantId === pr.tenantId && a.type === "Banco");
     if (defaultAcc) {
       const actualTotal = pr.items.reduce((sum, item) => sum + ((item.actualPrice || item.estimatedPrice) * (item.receivedQuantity || item.quantity)), 0);
+      const tenant = tenants.find(t => t.id === pr.tenantId);
+      const consolidationCurrency = tenant?.defaultCurrency || Currency.USD;
+      const paymentDate = new Date().toISOString().split("T")[0];
+      const dailyRate = await getDailyOfficialRate(paymentDate);
       const invoicePayment: FinancialMovement = {
         id: `mov-pur-${Date.now()}`,
         tenantId: pr.tenantId,
@@ -1512,15 +1824,16 @@ app.put("/api/purchase-requests/:id/flow", (req: Request, res: Response) => {
         accountId: defaultAcc.id,
         counterpartyId: pr.items[0]?.supplierId,
         categoryId: pr.categoryId,
+        purchaseRequestId: pr.id,
         amount: actualTotal,
         currency: pr.currency,
-        baseAmount: pr.currency === Currency.USD ? actualTotal : actualTotal / exchangeRates.ARS_USD_MEP,
-        exchangeRate: pr.currency === Currency.USD ? 1.0 : exchangeRates.ARS_USD_MEP,
-        exchangeRateDate: new Date().toISOString().split("T")[0],
+        baseAmount: convertAmount(actualTotal, pr.currency, consolidationCurrency, dailyRate.sell),
+        exchangeRate: dailyRate.sell,
+        exchangeRateDate: dailyRate.date,
         type: MovementType.EGRESO,
         description: `Pago automático Factura Proveedor - OC #${pr.code}: ${pr.title}`,
         status: MovementStatus.POSTED,
-        date: new Date().toISOString().split("T")[0],
+        date: paymentDate,
         performedBy: "Sistema de Compras Automático"
       };
 
@@ -1531,7 +1844,176 @@ app.put("/api/purchase-requests/:id/flow", (req: Request, res: Response) => {
     pr.status = PurchaseStatus.REJECTED;
   }
 
+  persistAppState();
   res.json(pr);
+});
+
+app.post("/api/sales/units", (req: Request, res: Response) => {
+  const data = req.body;
+  const project = projects.find(item => item.id === data.projectId && item.tenantId === data.tenantId);
+  if (!project || !data.name || !data.type || !data.currency || Number(data.price) < 0) {
+    return res.status(400).json({ error: "Datos de unidad incompletos o proyecto inválido" });
+  }
+
+  const unit: SellableUnit = {
+    id: `unit-${Date.now()}`,
+    projectId: project.id,
+    name: String(data.name).trim(),
+    type: data.type as UnitType,
+    status: UnitStatus.AVAILABLE,
+    surfaceM2: Number(data.surfaceM2) || 0,
+    coveredSurfaceM2: Number(data.coveredSurfaceM2) || 0,
+    semiCoveredSurfaceM2: Number(data.semiCoveredSurfaceM2) || 0,
+    uncoveredSurfaceM2: Number(data.uncoveredSurfaceM2) || 0,
+    description: data.description || "",
+    view: data.view || "",
+    orientation: data.orientation || "",
+    floor: data.floor || "",
+    rooms: Number(data.rooms) || 0,
+    bedrooms: Number(data.bedrooms) || 0,
+    bathrooms: Number(data.bathrooms) || 0,
+    imageUrls: Array.isArray(data.imageUrls) ? data.imageUrls.slice(0, 6) : [],
+    financingDescription: data.financingDescription || "",
+    price: Number(data.price),
+    currency: data.currency as Currency
+  };
+  sellableUnits.push(unit);
+  persistAppState();
+  res.status(201).json(unit);
+});
+
+app.post("/api/sales/opportunities", (req: Request, res: Response) => {
+  const data = req.body;
+  const project = projects.find(item => item.id === data.projectId && item.tenantId === data.tenantId);
+  const customer = counterparties.find(item => item.id === data.customerId && item.tenantId === data.tenantId && item.type === "Cliente");
+  const selectedUnits = sellableUnits.filter(item => data.unitIds?.includes(item.id) && item.projectId === data.projectId);
+  if (!project || !customer || selectedUnits.length === 0 || selectedUnits.length !== data.unitIds.length) {
+    return res.status(400).json({ error: "Cliente, proyecto o unidades inválidos" });
+  }
+  if (selectedUnits.some(unit => unit.status === UnitStatus.SOLD)) {
+    return res.status(409).json({ error: "Una de las unidades ya fue vendida" });
+  }
+
+  const basePrice = selectedUnits.reduce((sum, unit) => sum + unit.price, 0);
+  const negotiatedPrice = Number(data.negotiatedPrice) || basePrice;
+  const reservationDays = Math.max(0, Number(data.reservationDays) || 0);
+  const stage = reservationDays > 0 ? "RESERVED" : (data.stage || "LEAD");
+  const createdAt = new Date();
+  const opportunity: SalesOpportunity = {
+    id: `opp-${Date.now()}`,
+    tenantId: data.tenantId,
+    projectId: data.projectId,
+    customerId: data.customerId,
+    unitIds: selectedUnits.map(unit => unit.id),
+    title: data.title || `${customer.name} · ${selectedUnits.map(unit => unit.name).join(" + ")}`,
+    stage,
+    createdAt: createdAt.toISOString(),
+    updatedAt: createdAt.toISOString(),
+    reservationExpiresAt: reservationDays > 0
+      ? new Date(createdAt.getTime() + reservationDays * 86400000).toISOString()
+      : undefined,
+    basePrice,
+    negotiatedPrice,
+    currency: data.currency || selectedUnits[0].currency,
+    discountAmount: basePrice - negotiatedPrice,
+    downPayment: Number(data.downPayment) || 0,
+    cashPayment: Number(data.cashPayment) || 0,
+    installmentCount: Number(data.installmentCount) || 0,
+    installmentAmount: Number(data.installmentAmount) || 0,
+    reinforcements: Number(data.reinforcements) || 0,
+    possessionBalance: Number(data.possessionBalance) || 0,
+    financingRate: Number(data.financingRate) || 0,
+    indexType: data.indexType || IndexType.NONE,
+    baseIndexValue: Number(data.baseIndexValue) || 1,
+    commissionType: data.commissionType || "PERCENTAGE",
+    commissionValue: Number(data.commissionValue) || 0,
+    sellerName: data.sellerName || "",
+    nextAction: data.nextAction || "",
+    nextActionDate: data.nextActionDate,
+    notes: data.notes || "",
+    documentUrls: Array.isArray(data.documentUrls) ? data.documentUrls : []
+  };
+  salesOpportunities.unshift(opportunity);
+  if (stage === "RESERVED") selectedUnits.forEach(unit => { unit.status = UnitStatus.RESERVED; });
+  persistAppState();
+  res.status(201).json(opportunity);
+});
+
+app.put("/api/sales/opportunities/:id/stage", (req: Request, res: Response) => {
+  const opportunity = salesOpportunities.find(item => item.id === req.params.id);
+  if (!opportunity) return res.status(404).json({ error: "Oportunidad no encontrada" });
+  const nextStage = req.body.stage as SalesOpportunity["stage"];
+  const allowedStages = ["LEAD", "CONTACTED", "VISIT", "NEGOTIATION", "RESERVED", "WON", "LOST", "EXPIRED", "CANCELLED_BY_CLIENT"];
+  if (!allowedStages.includes(nextStage)) return res.status(400).json({ error: "Etapa inválida" });
+  if (["LOST", "CANCELLED_BY_CLIENT"].includes(nextStage) && !req.body.lossReason) {
+    return res.status(400).json({ error: "Debe indicar el motivo de cierre" });
+  }
+
+  opportunity.stage = nextStage;
+  opportunity.lossReason = req.body.lossReason || opportunity.lossReason;
+  opportunity.updatedAt = new Date().toISOString();
+  const opportunityUnits = sellableUnits.filter(unit => opportunity.unitIds.includes(unit.id));
+
+  if (["LOST", "EXPIRED", "CANCELLED_BY_CLIENT"].includes(nextStage)) {
+    opportunityUnits.forEach(unit => {
+      if (unit.status === UnitStatus.RESERVED) unit.status = UnitStatus.AVAILABLE;
+    });
+  }
+
+  if (nextStage === "WON") {
+    const existingContract = salesContracts.find(contract => contract.opportunityId === opportunity.id);
+    if (!existingContract) {
+      const contractId = `con-${Date.now()}`;
+      const contract: SalesContract = {
+        id: contractId,
+        tenantId: opportunity.tenantId,
+        projectId: opportunity.projectId,
+        unitId: opportunity.unitIds[0],
+        unitIds: opportunity.unitIds,
+        opportunityId: opportunity.id,
+        customerId: opportunity.customerId,
+        contractDate: new Date().toISOString().split("T")[0],
+        totalPrice: opportunity.negotiatedPrice,
+        currency: opportunity.currency,
+        downPayment: opportunity.downPayment,
+        installmentCount: opportunity.installmentCount,
+        indexType: opportunity.indexType,
+        baseIndexValue: opportunity.baseIndexValue,
+        status: "ACTIVE",
+        cashPayment: opportunity.cashPayment,
+        reinforcements: opportunity.reinforcements,
+        possessionBalance: opportunity.possessionBalance,
+        financingRate: opportunity.financingRate,
+        commissionType: opportunity.commissionType,
+        commissionValue: opportunity.commissionValue
+      };
+      salesContracts.unshift(contract);
+      opportunityUnits.forEach(unit => {
+        unit.status = UnitStatus.SOLD;
+        unit.currentOwnerId = opportunity.customerId;
+      });
+      for (let number = 1; number <= opportunity.installmentCount; number += 1) {
+        const dueDate = new Date();
+        dueDate.setMonth(dueDate.getMonth() + number);
+        installments.push({
+          id: `inst-${contractId}-${number}`,
+          contractId,
+          installmentNumber: number,
+          originalAmount: opportunity.installmentAmount,
+          currency: opportunity.currency,
+          dueDate: dueDate.toISOString().split("T")[0],
+          indexType: opportunity.indexType,
+          indexBaseValue: opportunity.baseIndexValue,
+          indexCurrentValue: opportunity.baseIndexValue,
+          adjustedAmount: opportunity.installmentAmount,
+          paidAmount: 0,
+          status: InstallmentStatus.PENDING
+        });
+      }
+    }
+  }
+  persistAppState();
+  res.json(opportunity);
 });
 
 // 10. Adjust Installments using CAC/Inflation indices (Section 11.5)
@@ -1558,7 +2040,7 @@ app.post("/api/installments/:id/adjust", (req: Request, res: Response) => {
 });
 
 // 11. Pay Installment
-app.post("/api/installments/:id/pay", (req: Request, res: Response) => {
+app.post("/api/installments/:id/pay", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { accountId, paidAmount, date } = req.body;
 
@@ -1583,6 +2065,10 @@ app.post("/api/installments/:id/pay", (req: Request, res: Response) => {
     const activeAcc = accounts.find(a => a.id === accountId) || accounts.find(a => a.tenantId === contract.tenantId && a.type === "Banco");
     
     if (activeAcc) {
+      const tenant = tenants.find(t => t.id === contract.tenantId);
+      const consolidationCurrency = tenant?.defaultCurrency || Currency.USD;
+      const paymentDate = date || new Date().toISOString().split("T")[0];
+      const dailyRate = await getDailyOfficialRate(paymentDate);
       // Record financial movement INGRESO
       const installmentIncome: FinancialMovement = {
         id: `mov-inst-${Date.now()}`,
@@ -1592,13 +2078,13 @@ app.post("/api/installments/:id/pay", (req: Request, res: Response) => {
         counterpartyId: contract.customerId,
         amount: activePaidAmt,
         currency: inst.currency,
-        baseAmount: inst.currency === Currency.USD ? activePaidAmt : activePaidAmt / exchangeRates.ARS_USD_MEP,
-        exchangeRate: inst.currency === Currency.USD ? 1.0 : exchangeRates.ARS_USD_MEP,
-        exchangeRateDate: date || new Date().toISOString().split("T")[0],
+        baseAmount: convertAmount(activePaidAmt, inst.currency, consolidationCurrency, dailyRate.sell),
+        exchangeRate: dailyRate.sell,
+        exchangeRateDate: dailyRate.date,
         type: MovementType.INGRESO,
         description: `Cobranza de Cuota #${inst.installmentNumber} - Contrato Unidad ${contract.unitId}`,
         status: MovementStatus.POSTED,
-        date: date || new Date().toISOString().split("T")[0],
+        date: paymentDate,
         performedBy: "Cobranzas Automatizadas"
       };
 
@@ -1607,6 +2093,7 @@ app.post("/api/installments/:id/pay", (req: Request, res: Response) => {
     }
   }
 
+  persistAppState();
   res.json(inst);
 });
 
@@ -1647,25 +2134,9 @@ app.post("/api/projects", (req: Request, res: Response) => {
 
   projects.push(newProj);
 
-  // Initialize basic budget lines for this project
-  const tenantCats = costCategories.filter(c => c.tenantId === pData.tenantId && !c.parentId);
-  tenantCats.forEach((cat, index) => {
-    // Generate standard split distributions (e.g. 10%, 40%, 20%, 30%)
-    const standardSplits = [10, 40, 20, 30];
-    const incidence = standardSplits[index % standardSplits.length];
-    const amt = (newProj.estimatedTotalCost * incidence) / 100;
-
-    budgetLines.push({
-      id: `bl-${Date.now()}-${index}`,
-      projectId: newProj.id,
-      categoryId: cat.id,
-      code: cat.code,
-      name: cat.name,
-      amount: amt,
-      incidence: incidence,
-      notes: "Inicializado automáticamente"
-    });
-  });
+  // Initialize the complete reference budget for the selected construction type.
+  budgetLines.push(...createReferenceBudgetLines(newProj));
+  persistAppState();
 
   res.status(201).json(newProj);
 });
@@ -1700,7 +2171,53 @@ app.put("/api/projects/:id", (req: Request, res: Response) => {
   if (pData.schedule !== undefined) project.schedule = pData.schedule;
   if (pData.certifications !== undefined) project.certifications = pData.certifications;
 
+  if (
+    pData.constructionType !== undefined ||
+    pData.surfaceM2 !== undefined ||
+    pData.estimatedCostPerM2 !== undefined
+  ) {
+    budgetLines = budgetLines.filter(line => line.projectId !== project.id);
+    budgetLines.push(...createReferenceBudgetLines(project));
+  }
+
+  persistAppState();
   res.json(project);
+});
+
+// 12b. Edit a budget line and its detail subitems
+app.put("/api/budget-lines/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  const line = budgetLines.find(item => item.id === id);
+  if (!line) {
+    return res.status(404).json({ error: "Línea presupuestaria no encontrada" });
+  }
+
+  const project = projects.find(item => item.id === line.projectId);
+  if (!project) {
+    return res.status(404).json({ error: "Proyecto no encontrado" });
+  }
+
+  const incidence = Number(req.body.incidence);
+  if (!Number.isFinite(incidence) || incidence < 0 || incidence > 100) {
+    return res.status(400).json({ error: "El porcentaje debe estar entre 0 y 100" });
+  }
+
+  const subitems = Array.isArray(req.body.subitems)
+    ? req.body.subitems.map((item: any, index: number) => ({
+        id: String(item.id || `bsi-${Date.now()}-${index}`),
+        description: String(item.description || "").trim(),
+        amount: Math.max(0, Number(item.amount) || 0),
+        notes: item.notes ? String(item.notes) : undefined
+      })).filter((item: any) => item.description)
+    : line.subitems || [];
+
+  line.incidence = Number(incidence.toFixed(2));
+  line.amount = Number(((project.estimatedTotalCost * line.incidence) / 100).toFixed(2));
+  line.notes = req.body.notes !== undefined ? String(req.body.notes) : line.notes;
+  line.subitems = subitems;
+
+  persistAppState();
+  return res.json(line);
 });
 
 // 12c. Generate schedule with AI (Gemini)
@@ -1752,6 +2269,7 @@ app.post("/api/projects/:id/generate-schedule", async (req: Request, res: Respon
     console.log("Gemini API Client not initialized. Returning high-fidelity fallback schedule.");
     const schedule = getFallbackTasks(project.projectType, project.constructionType);
     project.schedule = schedule;
+    persistAppState();
     return res.json(project);
   }
 
@@ -1806,17 +2324,20 @@ Return a JSON array of these tasks directly matching the schema.`;
           endWeek: Number(t.endWeek) || 4,
           progress: 0
         }));
+        persistAppState();
         return res.json(project);
       }
     }
     
     const schedule = getFallbackTasks(project.projectType, project.constructionType);
     project.schedule = schedule;
+    persistAppState();
     return res.json(project);
   } catch (error) {
     console.error("Error generating schedule via Gemini API:", error);
     const schedule = getFallbackTasks(project.projectType, project.constructionType);
     project.schedule = schedule;
+    persistAppState();
     return res.json(project);
   }
 });
@@ -1849,6 +2370,7 @@ app.post("/api/projects/:id/certifications", (req: Request, res: Response) => {
   project.physicalProgress = newCert.physicalProgress;
   project.financialProgress = newCert.financialProgress;
 
+  persistAppState();
   res.status(201).json(project);
 });
 
@@ -1891,7 +2413,7 @@ app.post("/api/counterparties", (req: Request, res: Response) => {
 // 13. Create Early Consortium Complaint
 app.post("/api/consortium/complaints", (req: Request, res: Response) => {
   const reqData = req.body;
-  if (!reqData.tenantId || !reqData.projectId || !reqData.unitId || !reqData.description) {
+  if (!reqData.tenantId || !reqData.projectId || !reqData.customerId || !reqData.description) {
     return res.status(400).json({ error: "Missing required warranty fields" });
   }
 
@@ -1899,7 +2421,8 @@ app.post("/api/consortium/complaints", (req: Request, res: Response) => {
     id: `maint-${Date.now()}`,
     tenantId: reqData.tenantId,
     projectId: reqData.projectId,
-    unitId: reqData.unitId,
+    unitId: reqData.unitId || undefined,
+    customerId: reqData.customerId,
     reporterName: reqData.reporterName || "Propietario",
     reporterContact: reqData.reporterContact || "Email/Tel",
     description: reqData.description,
@@ -2208,10 +2731,41 @@ Respond ONLY with valid JSON containing:
 app.post("/api/budget-helper", async (req: Request, res: Response) => {
   const { projectId, comProjects, surfaceM2, estimatedCostPerM2 } = req.body;
 
-  if (!projectId || !comProjects || !surfaceM2 || !estimatedCostPerM2) {
+  if (!projectId || !surfaceM2 || !estimatedCostPerM2) {
     return res.status(400).json({ error: "Missing required simulation fields" });
   }
 
+  const referenceProject = projects.find(project => project.id === projectId);
+  if (!referenceProject) {
+    return res.status(404).json({ error: "Proyecto no encontrado" });
+  }
+
+  const template = getBudgetTemplate(referenceProject.constructionType);
+  const templateName = template === HOUSE_BUDGET_TEMPLATE ? "Casa" : "Edificio";
+  const totalCost = Number(surfaceM2) * Number(estimatedCostPerM2);
+  const results = template.map((item, index) => ({
+    code: String(index + 1).padStart(2, "0"),
+    name: item.name,
+    suggestedIncidence: item.incidence,
+    suggestedAmount: Number(((totalCost * item.incidence) / 100).toFixed(2)),
+    justification: `Incidencia de referencia para ${templateName} según Tr3sR Contabilidad v12.0.`
+  }));
+
+  results.forEach(result => {
+    const matchingLine = budgetLines.find(
+      line => line.projectId === projectId && line.code === result.code
+    );
+    if (matchingLine) {
+      matchingLine.suggestedIncidence = result.suggestedIncidence;
+      matchingLine.suggestedAmount = result.suggestedAmount;
+      matchingLine.notes = result.justification;
+    }
+  });
+
+  persistAppState();
+  return res.status(200).json(results);
+
+  /*
   console.log(`Calculating budget projection for project ID ${projectId} using comparison weights...`);
 
   // Retrieve comparable projects and compile actual distributions
@@ -2340,12 +2894,23 @@ Return ONLY valid JSON:
   });
 
   res.status(200).json(fallbackResults);
+  */
 });
 
 // ---------------------------------------------------------
 // STARTUP AND VITE MIDDLEWARE INTERACTION
 // ---------------------------------------------------------
 async function startServer() {
+  const refreshOfficialRate = async () => {
+    try {
+      await getDailyOfficialRate();
+    } catch (error) {
+      console.error("No se pudo guardar la cotización oficial diaria:", error);
+    }
+  };
+  await refreshOfficialRate();
+  setInterval(refreshOfficialRate, 60 * 60 * 1000);
+
   // Vite dev middleware for development environment
   if (process.env.NODE_ENV !== "production") {
     console.log("Configuring Vite middleware in development...");

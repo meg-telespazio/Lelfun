@@ -16,7 +16,8 @@ import {
   CheckCircle,
   Warehouse,
   Upload,
-  ArrowRight
+  ArrowRight,
+  Pencil
 } from "lucide-react";
 import { Tenant, Currency, FinancialAccount } from "../types.js";
 
@@ -62,6 +63,10 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
   const [newAccName, setNewAccName] = useState("");
   const [newAccCurrency, setNewAccCurrency] = useState(Currency.USD);
   const [newAccBalance, setNewAccBalance] = useState("");
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [editAccName, setEditAccName] = useState("");
+  const [editAccCurrency, setEditAccCurrency] = useState(Currency.USD);
+  const [editAccBalance, setEditAccBalance] = useState("");
 
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
@@ -221,6 +226,37 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
         setNewAccName("");
         setNewAccBalance("");
         setShowAddAccount(false);
+        onRefresh();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleStartEditAccount = (account: FinancialAccount) => {
+    setEditingAccountId(account.id);
+    setEditAccName(account.name);
+    setEditAccCurrency(account.currency);
+    setEditAccBalance(String(account.balance));
+  };
+
+  const handleUpdateAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAccountId || !editAccName || editAccBalance === "") return;
+
+    try {
+      const response = await fetch(`/api/tenants/${tenant.id}/accounts/${editingAccountId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editAccName,
+          currency: editAccCurrency,
+          balance: Number(editAccBalance)
+        })
+      });
+
+      if (response.ok) {
+        setEditingAccountId(null);
         onRefresh();
       }
     } catch (err) {
@@ -682,18 +718,74 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
 
             <div className="space-y-2.5">
               {accounts.filter(a => a.type === "Banco").map((acc) => (
-                <div key={acc.id} className="p-2.5 bg-slate-50 rounded-lg border text-xs flex justify-between items-center">
-                  <div className="min-w-0">
-                    <p className="font-bold text-slate-800 truncate">{acc.name}</p>
-                    <p className="text-[10px] text-slate-400 font-mono">Moneda: {acc.currency}</p>
+                editingAccountId === acc.id ? (
+                  <form key={acc.id} onSubmit={handleUpdateAccount} className="p-3 bg-emerald-50/50 rounded-lg border border-emerald-200 space-y-2">
+                    <input
+                      type="text"
+                      required
+                      value={editAccName}
+                      onChange={(e) => setEditAccName(e.target.value)}
+                      className="w-full bg-white border rounded px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
+                    />
+                    <div className="flex gap-2">
+                      <select
+                        value={editAccCurrency}
+                        onChange={(e) => setEditAccCurrency(e.target.value as Currency)}
+                        className="flex-1 bg-white border rounded px-2 py-1 text-xs outline-none"
+                      >
+                        {Object.values(Currency).map(value => (
+                          <option key={value} value={value}>{value}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={editAccBalance}
+                        onChange={(e) => setEditAccBalance(e.target.value)}
+                        className="flex-1 min-w-0 bg-white border rounded px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
+                        aria-label="Saldo de la cuenta"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingAccountId(null)}
+                        className="px-2 py-1 bg-slate-200 text-slate-700 rounded text-[10px] font-bold cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-3 py-1 bg-emerald-600 text-white rounded text-[10px] font-bold cursor-pointer"
+                      >
+                        Guardar cambios
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div key={acc.id} className="p-2.5 bg-slate-50 rounded-lg border text-xs flex justify-between items-center gap-2">
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-800 truncate">{acc.name}</p>
+                      <p className="text-[10px] text-slate-400 font-mono">Moneda: {acc.currency}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-mono font-bold text-slate-700">
+                        {acc.currency === Currency.USD ? "$" : acc.currency === Currency.ARS ? "ARS " : "R$ "}
+                        {acc.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleStartEditAccount(acc)}
+                        className="p-1.5 rounded bg-white border border-slate-200 text-slate-500 hover:text-emerald-700 hover:border-emerald-300 cursor-pointer"
+                        title={`Editar ${acc.name}`}
+                        aria-label={`Editar ${acc.name}`}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-mono font-bold text-slate-700">
-                      {acc.currency === Currency.USD ? "$" : acc.currency === Currency.ARS ? "ARS " : "R$ "}
-                      {acc.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                </div>
+                )
               ))}
               {accounts.filter(a => a.type === "Banco").length === 0 && (
                 <p className="text-center text-[10px] text-slate-400 py-3">No hay cuentas bancarias registradas</p>

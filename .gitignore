@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+custom-app-state.json
+custom-tenants.json

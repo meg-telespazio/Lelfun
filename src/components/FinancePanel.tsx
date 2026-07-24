@@ -4,9 +4,11 @@
  */
 
 import { useState, FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { 
   FinancialAccount, 
   FinancialMovement, 
+  PurchaseRequest,
   Counterparty, 
   CostCategory, 
   MovementType, 
@@ -31,9 +33,10 @@ interface FinancePanelProps {
   movements: FinancialMovement[];
   counterparties: Counterparty[];
   categories: CostCategory[];
+  purchaseRequests: PurchaseRequest[];
   tenantId: string;
+  projectId: string;
   onRefresh: () => void;
-  exchangeRates: any;
 }
 
 export default function FinancePanel({
@@ -41,9 +44,10 @@ export default function FinancePanel({
   movements,
   counterparties,
   categories,
+  purchaseRequests,
   tenantId,
-  onRefresh,
-  exchangeRates
+  projectId,
+  onRefresh
 }: FinancePanelProps) {
   // Movement form state
   const [showAddModal, setShowAddModal] = useState(false);
@@ -52,6 +56,7 @@ export default function FinancePanel({
   const [targetAccountId, setTargetAccountId] = useState("");
   const [counterpartyId, setCounterpartyId] = useState("");
   const [categoryId, setCategoryId] = useState("");
+  const [purchaseRequestId, setPurchaseRequestId] = useState("");
   const [amount, setAmount] = useState("");
   const [currency, setCurrency] = useState(Currency.USD);
   const [description, setDescription] = useState("");
@@ -72,6 +77,7 @@ export default function FinancePanel({
 
   // Filter leaf categories
   const leafCategories = categories.filter(c => c.isLeaf);
+  const projectPurchaseRequests = purchaseRequests.filter(pr => pr.projectId === projectId);
 
   // Submit new movement
   const handleAddMovement = async (e: FormEvent) => {
@@ -96,22 +102,19 @@ export default function FinancePanel({
     setIsSubmitting(true);
     try {
       // Calculate conversion rate if needed
-      const rate = currency === Currency.USD ? 1.0 : exchangeRates.ARS_USD_MEP;
-      const baseAmount = currency === Currency.USD ? Number(amount) : Number(amount) / rate;
-
       const response = await fetch("/api/movements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tenantId,
+          projectId: projectId || undefined,
           accountId,
           targetAccountId: type === MovementType.TRANSFERENCIA ? targetAccountId : undefined,
           counterpartyId: counterpartyId || undefined,
           categoryId: categoryId || undefined,
+          purchaseRequestId: type === MovementType.EGRESO && purchaseRequestId ? purchaseRequestId : undefined,
           amount: Number(amount),
           currency,
-          baseAmount,
-          exchangeRate: rate,
           type,
           description,
           status: MovementStatus.PENDING_VALIDATION, // Under review by default
@@ -130,6 +133,7 @@ export default function FinancePanel({
       setDescription("");
       setCounterpartyId("");
       setCategoryId("");
+      setPurchaseRequestId("");
       onRefresh();
     } catch (err: any) {
       setErrorMsg(err.message || "Error de red.");
@@ -313,6 +317,7 @@ export default function FinancePanel({
                     const destAcc = mov.targetAccountId ? accounts.find(a => a.id === mov.targetAccountId) : null;
                     const cp = counterparties.find(c => c.id === mov.counterpartyId);
                     const cat = categories.find(c => c.id === mov.categoryId);
+                    const purchaseRequest = purchaseRequests.find(pr => pr.id === mov.purchaseRequestId);
 
                     return (
                       <tr key={mov.id} className="hover:bg-slate-50/50 transition-colors" id={`row-mov-${mov.id}`}>
@@ -320,6 +325,11 @@ export default function FinancePanel({
                         <td className="py-3">
                           <p className="font-medium text-slate-800">{mov.description}</p>
                           {cp && <span className="text-xs text-slate-400">{cp.name}</span>}
+                          {purchaseRequest && (
+                            <span className="block text-[10px] font-mono text-amber-600">
+                              {purchaseRequest.code} · {purchaseRequest.title}
+                            </span>
+                          )}
                         </td>
                         <td className="py-3">
                           {mov.type === MovementType.TRANSFERENCIA ? (
@@ -352,6 +362,9 @@ export default function FinancePanel({
                               {mov.amount.toLocaleString("es-AR", { minimumFractionDigits: 2 })}
                             </span>
                           </div>
+                          <p className="text-[9px] text-slate-400 font-mono">
+                            TC oficial {mov.exchangeRate} · {mov.exchangeRateDate}
+                          </p>
                         </td>
                         <td className="py-3 text-center">
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
@@ -519,7 +532,7 @@ export default function FinancePanel({
       </div>
 
       {/* 4. Registrar Movimiento Modal */}
-      {showAddModal && (
+      {showAddModal && createPortal((
         <div className="fixed inset-0 bg-slate-950/50 flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-slate-900">
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
@@ -652,6 +665,36 @@ export default function FinancePanel({
                 </div>
               )}
 
+              {type === MovementType.EGRESO && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-500 mb-1">
+                    Nota de Pedido asociada
+                  </label>
+                  <select
+                    value={purchaseRequestId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setPurchaseRequestId(nextId);
+                      const selectedRequest = projectPurchaseRequests.find(pr => pr.id === nextId);
+                      if (selectedRequest?.categoryId) setCategoryId(selectedRequest.categoryId);
+                    }}
+                    className="w-full border border-slate-200 rounded p-1.5 text-xs bg-slate-50 text-slate-800 outline-none focus:border-amber-500"
+                  >
+                    <option value="">-- Sin nota de pedido --</option>
+                    {projectPurchaseRequests.map(pr => (
+                      <option key={pr.id} value={pr.id}>
+                        {pr.code} · {pr.title} ({pr.currency} {pr.estimatedTotal.toLocaleString("es-AR")})
+                      </option>
+                    ))}
+                  </select>
+                  {projectPurchaseRequests.length === 0 && (
+                    <p className="mt-1 text-[10px] text-slate-400">
+                      La obra activa no tiene notas de pedido registradas.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Date and Description */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="col-span-1">
@@ -696,7 +739,7 @@ export default function FinancePanel({
             </form>
           </div>
         </div>
-      )}
+      ), document.body)}
     </div>
   );
 }

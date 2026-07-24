@@ -4,12 +4,16 @@
  */
 
 import { useState, FormEvent } from "react";
-import { EarlyCondominium, MaintenanceRequest } from "../types.js";
+import { createPortal } from "react-dom";
+import { Counterparty, EarlyCondominium, MaintenanceRequest, Project, SellableUnit } from "../types.js";
 import { Plus, X, Building2, Key, ShieldAlert, Check, AlertTriangle, MessageSquare, Phone, User } from "lucide-react";
 
 interface ConsortiumPanelProps {
   condominiums: EarlyCondominium[];
   maintenanceRequests: MaintenanceRequest[];
+  projects: Project[];
+  units: SellableUnit[];
+  counterparties: Counterparty[];
   tenantId: string;
   projectId: string;
   onRefresh: () => void;
@@ -18,12 +22,17 @@ interface ConsortiumPanelProps {
 export default function ConsortiumPanel({
   condominiums,
   maintenanceRequests,
+  projects,
+  units,
+  counterparties,
   tenantId,
   projectId,
   onRefresh
 }: ConsortiumPanelProps) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedUnitId, setSelectedUnitId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId);
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [reporterName, setReporterName] = useState("");
   const [reporterContact, setReporterContact] = useState("");
   const [description, setDescription] = useState("");
@@ -31,10 +40,12 @@ export default function ConsortiumPanel({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const condo = condominiums[0]; // Take active condo for demonstration
+  const clients = counterparties.filter(counterparty => counterparty.type === "Cliente");
+  const availableUnits = units.filter(unit => unit.projectId === selectedProjectId);
 
   const handleCreateRequest = async (e: FormEvent) => {
     e.preventDefault();
-    if (!selectedUnitId || !reporterName || !description) return;
+    if (!selectedProjectId || !selectedCustomerId || !reporterName || !description) return;
 
     setIsSubmitting(true);
     try {
@@ -43,8 +54,9 @@ export default function ConsortiumPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tenantId,
-          projectId, // Links to active project
-          unitId: selectedUnitId,
+          projectId: selectedProjectId,
+          unitId: selectedUnitId || undefined,
+          customerId: selectedCustomerId,
           reporterName,
           reporterContact,
           description,
@@ -55,6 +67,7 @@ export default function ConsortiumPanel({
       if (response.ok) {
         setShowAddModal(false);
         setSelectedUnitId("");
+        setSelectedCustomerId("");
         setReporterName("");
         setReporterContact("");
         setDescription("");
@@ -148,13 +161,17 @@ export default function ConsortiumPanel({
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded">
-                          Unidad {req.unitId.replace("unit-p", "")}
+                          {req.unitId ? `Unidad ${units.find(unit => unit.id === req.unitId)?.name || req.unitId}` : "Sin unidad asociada"}
                         </span>
                         <span className="text-[10px] text-slate-400">Reportado: {req.reportedDate}</span>
                       </div>
                       <h4 className="font-semibold text-slate-700 text-xs mt-1.5 flex items-center gap-1">
                         <User className="w-3.5 h-3.5 text-slate-400" /> {req.reporterName} ({req.reporterContact})
                       </h4>
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        Proyecto: {projects.find(project => project.id === req.projectId)?.name || req.projectId}
+                        {" · "}Cliente: {clients.find(client => client.id === req.customerId)?.name || req.reporterName}
+                      </p>
                     </div>
 
                     <div className="flex gap-1.5 items-center">
@@ -222,7 +239,7 @@ export default function ConsortiumPanel({
       </div>
 
       {/* Registrar Reclamo Técnico Modal */}
-      {showAddModal && (
+      {showAddModal && createPortal((
         <div className="fixed inset-0 bg-slate-950/60 flex items-center justify-center p-4 z-50 animate-fade-in text-slate-900">
           <div className="bg-white rounded-xl max-w-sm w-full shadow-2xl overflow-hidden">
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
@@ -236,16 +253,52 @@ export default function ConsortiumPanel({
 
             <form onSubmit={handleCreateRequest} className="p-5 space-y-4 text-xs font-semibold">
               <div>
-                <label className="block text-[10px] text-slate-400 uppercase mb-1">Unidad Funcional Reclamante</label>
+                <label className="block text-[10px] text-slate-400 uppercase mb-1">Proyecto *</label>
+                <select
+                  value={selectedProjectId}
+                  onChange={(e) => { setSelectedProjectId(e.target.value); setSelectedUnitId(""); }}
+                  className="w-full border border-slate-200 rounded p-1.5 text-xs text-slate-800 outline-none"
+                  required
+                >
+                  <option value="">Seleccionar proyecto...</option>
+                  {projects.map(project => (
+                    <option key={project.id} value={project.id}>{project.code} · {project.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] text-slate-400 uppercase mb-1">Cliente *</label>
+                <select
+                  value={selectedCustomerId}
+                  onChange={(e) => {
+                    const customerId = e.target.value;
+                    setSelectedCustomerId(customerId);
+                    const customer = clients.find(item => item.id === customerId);
+                    if (customer) {
+                      setReporterName(customer.name);
+                      setReporterContact(customer.phone || customer.email || "");
+                    }
+                  }}
+                  className="w-full border border-slate-200 rounded p-1.5 text-xs text-slate-800 outline-none"
+                  required
+                >
+                  <option value="">Seleccionar cliente...</option>
+                  {clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] text-slate-400 uppercase mb-1">Unidad (opcional)</label>
                 <select
                   value={selectedUnitId}
                   onChange={(e) => setSelectedUnitId(e.target.value)}
                   className="w-full border border-slate-200 rounded p-1.5 text-xs text-slate-800 outline-none"
-                  required
+                  disabled={!selectedProjectId}
                 >
-                  <option value="">Seleccionar unidad...</option>
-                  {condo?.units?.map(u => (
-                    <option key={u.unitId} value={u.unitId}>Unidad {u.unitId.replace("unit-p", "")} ({u.ownerName})</option>
+                  <option value="">Sin unidad asociada</option>
+                  {availableUnits.map(unit => (
+                    <option key={unit.id} value={unit.id}>{unit.name} · {unit.type}</option>
                   ))}
                 </select>
               </div>
@@ -338,7 +391,7 @@ export default function ConsortiumPanel({
             </form>
           </div>
         </div>
-      )}
+      ), document.body)}
     </div>
   );
 }
