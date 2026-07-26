@@ -88,6 +88,7 @@ export interface Tenant {
   name: string;
   defaultCurrency: Currency;
   logoUrl?: string;
+  logoStoragePath?: string;
   enabledCurrencies: Currency[];
   nombreFantasia?: string;
   razonSocial?: string;
@@ -154,6 +155,9 @@ export interface FinancialAccount {
   type: "Caja" | "Banco" | "Tarjeta" | "Caja Fuerte";
   currency: Currency;
   balance: number;
+  responsibleName?: string;
+  responsibleEmail?: string;
+  responsiblePhone?: string;
 }
 
 export interface Counterparty {
@@ -436,6 +440,65 @@ export interface MarketplaceSupplier {
   verified: boolean;
   empresa?: string;
   cuit?: string;
+  tradeName?: string;
+  companyType?: string;
+  address?: string;
+  phone?: string;
+  website?: string;
+  socialLinks?: Record<string, string>;
+  yearsInBusinessRange?: string;
+  employeesRange?: string;
+  annualRevenueRange?: string;
+  description?: string;
+  approvalStatus?: "PENDING" | "APPROVED" | "REJECTED" | "SUSPENDED";
+}
+
+export interface MarketplaceProductVariant {
+  id: string;
+  name: string;
+  sku?: string;
+  attributes: Record<string, string>;
+  price?: number;
+  stockQuantity?: number;
+  active: boolean;
+}
+
+export interface MarketplaceProduct {
+  id: string;
+  supplierId: string;
+  supplierName?: string;
+  categoryId: string;
+  categoryName?: string;
+  name: string;
+  description: string;
+  brand?: string;
+  model?: string;
+  saleUnit: string;
+  currency: Currency.ARS | Currency.USD;
+  basePrice?: number;
+  priceOnRequest: boolean;
+  vatIncluded: boolean;
+  stockQuantity?: number;
+  minimumQuantity: number;
+  deliveryLeadDays?: number;
+  location?: string;
+  financingAvailable: boolean;
+  financingDetails?: string;
+  paymentMethods: string[];
+  deliveryMethods: string[];
+  status: "DRAFT" | "ACTIVE" | "PAUSED" | "SUSPENDED" | "ARCHIVED";
+  images: string[];
+  variants: MarketplaceProductVariant[];
+}
+
+export interface MarketplaceTenderLine {
+  id: string;
+  lineNumber: number;
+  description: string;
+  specifications?: string;
+  quantity: number;
+  unit: string;
+  awardedSupplierId?: string;
 }
 
 export interface PublicTender {
@@ -447,7 +510,17 @@ export interface PublicTender {
   description: string;
   deadline: string;
   category: string;
-  status: "OPEN" | "CLOSED" | "AWARDED";
+  processType?: "RFI" | "RFP";
+  visibility?: "PUBLIC" | "PRIVATE" | "LIMITED";
+  location?: string;
+  scopeType?: "MATERIALS" | "LABOR";
+  openingAt?: string;
+  questionsUntil?: string;
+  awardAt?: string;
+  publicAnswers?: boolean;
+  termsText?: string;
+  status: "OPEN" | "CLOSED" | "AWARDED" | "DRAFT" | "PUBLISHED" | "QUESTIONS" | "EVALUATION" | "CANCELLED" | "DESERTED";
+  lines?: MarketplaceTenderLine[];
   bids: {
     id: string;
     supplierId: string;

@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
 import { 
-  Hammer, 
   Sparkles, 
   ArrowRight, 
   Check, 
@@ -29,15 +28,8 @@ import { supabase } from "../supabaseClient";
 // Lelfun custom logo
 export function LelfunLogo({ className = "w-12 h-12" }: { className?: string }) {
   return (
-    <div className={`relative flex items-center justify-center ${className}`}>
-      <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full drop-shadow-sm">
-        <rect width="100" height="100" rx="24" fill="#0f172a" />
-        <line x1="20" y1="50" x2="80" y2="50" stroke="#334155" strokeWidth="2" strokeDasharray="4 4" />
-        <line x1="50" y1="20" x2="50" y2="80" stroke="#334155" strokeWidth="2" strokeDasharray="4 4" />
-        <path d="M 35 25 L 35 70 L 65 70" stroke="#f59e0b" strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M 65 30 C 65 20, 52 20, 52 35 L 52 75" stroke="#f8fafc" strokeWidth="9" strokeLinecap="round" />
-        <path d="M 44 42 L 60 42" stroke="#f8fafc" strokeWidth="9" strokeLinecap="round" />
-      </svg>
+    <div className={`relative flex items-center justify-center overflow-hidden rounded-xl bg-white shadow-sm ${className}`}>
+      <img src="/lelfun.png" alt="Lelfun" className="w-full h-full object-cover" />
     </div>
   );
 }
@@ -85,6 +77,12 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
   // Registration Supplier Form (Marketplace type only)
   const [suppEmpresa, setSuppEmpresa] = useState("");
   const [suppCuit, setSuppCuit] = useState("");
+  const [suppCompanyType, setSuppCompanyType] = useState("");
+  const [suppYearsRange, setSuppYearsRange] = useState("0-2");
+  const [suppEmployeesRange, setSuppEmployeesRange] = useState("1-10");
+  const [suppRevenueRange, setSuppRevenueRange] = useState("Hasta ARS 100M");
+  const [suppWebsite, setSuppWebsite] = useState("");
+  const [suppDescription, setSuppDescription] = useState("");
 
   // Demo Request State
   const [showDemoModal, setShowDemoModal] = useState(false);
@@ -132,67 +130,13 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
       });
 
       if (error) {
-        // Fallback simulated local verification if user wants to play instantly and Supabase has no seeded users yet
-        console.warn("Supabase Auth error:", error.message);
-        console.log("Entering high-fidelity developer simulation mode.");
-        
-        // Let's check if there is a local mock user stored in localStorage
-        const storedPass = localStorage.getItem(`lelf_pass_${email}`);
-        if (storedPass === password) {
-          const storedName = localStorage.getItem(`lelf_name_${email}`) || email.split("@")[0];
-          const storedTenantId = localStorage.getItem(`tenant_id_${email}`) || "tenant-lelfun";
-          const isSupplier = localStorage.getItem(`is_supplier_${email}`) === "true";
-          
-          localStorage.setItem("lelf_user_email", email);
-          localStorage.setItem("lelf_user_name", storedName);
-          
-          onLoginSuccess(email, storedTenantId, storedName, isSupplier);
-          return;
-        } else if (email === "mariano.telespazio@gmail.com" || email === "demo@lelfun.com") {
-          // Direct bypass for quick review and testing
-          const isSupplier = loginType === "marketplace";
-          const tenantId = isSupplier ? "tenant-lelfun" : "tenant-lelfun";
-          const uName = email === "mariano.telespazio@gmail.com" ? "Mariano Telespazio" : "Usuario Demo";
-          
-          localStorage.setItem("lelf_user_email", email);
-          localStorage.setItem("lelf_user_name", uName);
-          localStorage.setItem(`is_supplier_${email}`, String(isSupplier));
-          localStorage.setItem(`tenant_id_${email}`, tenantId);
-          
-          onLoginSuccess(email, tenantId, uName, isSupplier);
-          return;
-        }
-        
-        throw new Error(error.message);
+        throw new Error("Correo o contraseña incorrectos.");
       }
 
       if (data.user) {
         const uEmail = data.user.email || email;
-        const isSupplier = localStorage.getItem(`is_supplier_${uEmail}`) === "true";
-        let tenantId = localStorage.getItem(`tenant_id_${uEmail}`);
-
-        try {
-          const res = await fetch(`/api/me?user_email=${encodeURIComponent(uEmail)}&tenant_id=${encodeURIComponent(tenantId || "")}`);
-          if (res.ok) {
-            const me = await res.json();
-            if (me.tenantId) {
-              tenantId = me.tenantId;
-              localStorage.setItem(`tenant_id_${uEmail}`, me.tenantId);
-            }
-          }
-        } catch (err) {
-          console.warn("Could not query server /api/me on login", err);
-        }
-
-        if (!tenantId) {
-          tenantId = "tenant-lelfun";
-        }
         const uName = data.user.user_metadata?.nombre || uEmail.split("@")[0];
-
-        localStorage.setItem("lelf_user_email", uEmail);
-        localStorage.setItem("lelf_user_name", uName);
-
-        onLoginSuccess(uEmail, tenantId, uName, isSupplier);
+        onLoginSuccess(uEmail, "", uName, false);
       }
     } catch (err: any) {
       setErrorMsg(err.message || "Credenciales incorrectas o error de conexión.");
@@ -291,8 +235,18 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: suppEmpresa,
+            tradeName: suppEmpresa,
+            ownerName: userFullName,
             contactEmail: regEmail,
             cuit: suppCuit,
+            phone: regPhone,
+            companyType: suppCompanyType,
+            yearsInBusinessRange: suppYearsRange,
+            employeesRange: suppEmployeesRange,
+            annualRevenueRange: suppRevenueRange,
+            website: suppWebsite,
+            description: suppDescription,
+            address: [tenDireccion, tenCiudad, tenProvincia].filter(Boolean).join(", "),
             categories: ["Estructuras", "Terminaciones", "Logística"],
             serviceAreas: [tenProvincia || "Buenos Aires", "Nacional"]
           })
@@ -358,7 +312,7 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
       <header className="border-b border-slate-900 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40 px-6 py-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView("landing")}>
-            <LelfunLogo className="w-9 h-9" />
+            <img src="/lelfun.png" alt="Lelfun" className="w-11 h-11 rounded-xl object-cover bg-white shadow-lg shadow-amber-500/10" />
             <span className="font-extrabold text-base tracking-wider font-display text-white">
               LELFUN <span className="text-[10px] text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded font-bold uppercase tracking-widest">SaaS</span>
             </span>
@@ -901,6 +855,18 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                           required
                         />
                       </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Tipo de empresa</label>
+                        <input value={suppCompanyType} onChange={e => setSuppCompanyType(e.target.value)} placeholder="Fabricante, distribuidor…" className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white outline-none focus:border-amber-500" required />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Sitio web / red principal</label>
+                        <input value={suppWebsite} onChange={e => setSuppWebsite(e.target.value)} placeholder="https://empresa.com.ar" className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white outline-none focus:border-amber-500" />
+                      </div>
+                      <select value={suppYearsRange} onChange={e => setSuppYearsRange(e.target.value)} className="bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white"><option>0-2</option><option>3-5</option><option>6-10</option><option>11-20</option><option>Más de 20</option></select>
+                      <select value={suppEmployeesRange} onChange={e => setSuppEmployeesRange(e.target.value)} className="bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white"><option>1-10</option><option>11-50</option><option>51-200</option><option>Más de 200</option></select>
+                      <select value={suppRevenueRange} onChange={e => setSuppRevenueRange(e.target.value)} className="bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white"><option>Hasta ARS 100M</option><option>ARS 100M-500M</option><option>ARS 500M-2.000M</option><option>Más de ARS 2.000M</option></select>
+                      <textarea value={suppDescription} onChange={e => setSuppDescription(e.target.value)} placeholder="Experiencia, especialidad y capacidad operativa" className="bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white h-20 sm:col-span-2" required />
                     </div>
                   )}
 

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { 
   Building2, 
   Globe, 
@@ -61,14 +61,22 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
 
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [newAccName, setNewAccName] = useState("");
+  const [newAccType, setNewAccType] = useState<FinancialAccount["type"]>("Banco");
   const [newAccCurrency, setNewAccCurrency] = useState(Currency.USD);
   const [newAccBalance, setNewAccBalance] = useState("");
+  const [newAccResponsibleEmail, setNewAccResponsibleEmail] = useState("");
+  const [newAccResponsiblePhone, setNewAccResponsiblePhone] = useState("");
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [editAccName, setEditAccName] = useState("");
+  const [editAccType, setEditAccType] = useState<FinancialAccount["type"]>("Banco");
   const [editAccCurrency, setEditAccCurrency] = useState(Currency.USD);
   const [editAccBalance, setEditAccBalance] = useState("");
+  const [editAccResponsibleEmail, setEditAccResponsibleEmail] = useState("");
+  const [editAccResponsiblePhone, setEditAccResponsiblePhone] = useState("");
 
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const [saveMessage, setSaveMessage] = useState("");
 
   if (!tenant) {
@@ -209,6 +217,11 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAccName || !newAccBalance) return;
+    const responsible = tenant.activeUsers?.find(user => user.email === newAccResponsibleEmail);
+    if (newAccType !== "Banco" && (!responsible || !newAccResponsiblePhone.trim())) {
+      setSaveMessage("Las cajas requieren un responsable y un teléfono de contacto.");
+      return;
+    }
 
     try {
       const response = await fetch(`/api/tenants/${tenant.id}/accounts`, {
@@ -218,13 +231,19 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
           name: newAccName,
           currency: newAccCurrency,
           balance: Number(newAccBalance),
-          type: "Banco"
+          type: newAccType,
+          responsibleName: responsible?.name,
+          responsibleEmail: responsible?.email,
+          responsiblePhone: newAccResponsiblePhone.trim()
         })
       });
 
       if (response.ok) {
         setNewAccName("");
+        setNewAccType("Banco");
         setNewAccBalance("");
+        setNewAccResponsibleEmail("");
+        setNewAccResponsiblePhone("");
         setShowAddAccount(false);
         onRefresh();
       }
@@ -236,13 +255,21 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
   const handleStartEditAccount = (account: FinancialAccount) => {
     setEditingAccountId(account.id);
     setEditAccName(account.name);
+    setEditAccType(account.type);
     setEditAccCurrency(account.currency);
     setEditAccBalance(String(account.balance));
+    setEditAccResponsibleEmail(account.responsibleEmail || "");
+    setEditAccResponsiblePhone(account.responsiblePhone || "");
   };
 
   const handleUpdateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingAccountId || !editAccName || editAccBalance === "") return;
+    const responsible = tenant.activeUsers?.find(user => user.email === editAccResponsibleEmail);
+    if (editAccType !== "Banco" && (!responsible || !editAccResponsiblePhone.trim())) {
+      setSaveMessage("Las cajas requieren un responsable y un teléfono de contacto.");
+      return;
+    }
 
     try {
       const response = await fetch(`/api/tenants/${tenant.id}/accounts/${editingAccountId}`, {
@@ -250,8 +277,12 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: editAccName,
+          type: editAccType,
           currency: editAccCurrency,
-          balance: Number(editAccBalance)
+          balance: Number(editAccBalance),
+          responsibleName: responsible?.name,
+          responsibleEmail: responsible?.email,
+          responsiblePhone: editAccResponsiblePhone.trim()
         })
       });
 
@@ -264,16 +295,54 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
     }
   };
 
-  // Base64 Logo helper simulator
-  const triggerLogoUploadSim = () => {
-    const urls = [
-      "https://images.unsplash.com/photo-1541888946425-d81bb19240f5?q=80&w=150&auto=format&fit=crop",
-      "https://images.unsplash.com/photo-1590381105924-c72589b9ef3f?q=80&w=150&auto=format&fit=crop",
-      "https://images.unsplash.com/photo-1504307651254-35680f356dfd?q=80&w=150&auto=format&fit=crop"
-    ];
-    // Pick a random construction logo to simulate real upload
-    const randomUrl = urls[Math.floor(Math.random() * urls.length)];
-    setLogoUrl(randomUrl);
+  const handleLogoUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const allowedTypes = ["image/png", "image/jpeg", "image/webp"];
+    if (!allowedTypes.includes(file.type)) {
+      setSaveMessage("El logo debe ser PNG, JPG o WEBP.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setSaveMessage("El logo no puede superar los 5 MB.");
+      return;
+    }
+
+    setIsUploadingLogo(true);
+    setSaveMessage("");
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      const response = await fetch(`/api/tenants/${tenant.id}/logo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: file.name, mimeType: file.type, base64 })
+      });
+      const responseText = await response.text();
+      let result: { error?: string; logoUrl?: string } = {};
+      try {
+        result = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new Error("El servidor no devolvió una respuesta válida al subir el logo.");
+      }
+      if (!response.ok) throw new Error(result.error || "No se pudo subir el logo.");
+
+      if (!result.logoUrl) throw new Error("El servidor no devolvió la ubicación del logo.");
+      setLogoUrl(result.logoUrl);
+      setSaveMessage("¡Logo de la empresa actualizado correctamente!");
+      onRefresh();
+      setTimeout(() => setSaveMessage(""), 4000);
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : "No se pudo subir el logo.");
+    } finally {
+      setIsUploadingLogo(false);
+    }
   };
 
   return (
@@ -352,21 +421,24 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
                 )}
               </div>
               <div className="flex-1 space-y-1">
-                <label className="block text-xs font-bold text-slate-700">Logo de la Empresa (URL / Base64)</label>
+                <label className="block text-xs font-bold text-slate-700">Logo de la Empresa</label>
+                <p className="text-[11px] text-slate-500">PNG, JPG o WEBP, hasta 5 MB.</p>
                 <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    value={logoUrl} 
-                    onChange={(e) => setLogoUrl(e.target.value)}
-                    placeholder="https://ejemplo.com/logo.png"
-                    className="flex-1 bg-white border rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-1 focus:ring-amber-500"
+                  <input
+                    ref={logoInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={handleLogoUpload}
+                    className="hidden"
                   />
                   <button
                     type="button"
-                    onClick={triggerLogoUploadSim}
-                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 rounded-lg text-xs font-semibold text-slate-700 flex items-center gap-1 shrink-0 cursor-pointer"
+                    onClick={() => logoInputRef.current?.click()}
+                    disabled={isUploadingLogo}
+                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 rounded-lg text-xs font-semibold text-white flex items-center gap-1 shrink-0 cursor-pointer disabled:opacity-50"
                   >
-                    <Upload className="w-3.5 h-3.5" /> Subir
+                    <Upload className="w-3.5 h-3.5" />
+                    {isUploadingLogo ? "Subiendo..." : logoUrl ? "Cambiar logo" : "Subir logo"}
                   </button>
                 </div>
               </div>
@@ -650,17 +722,17 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
             </div>
           </div>
 
-          {/* 3. Bank Accounts (Alta cuentas bancarias) */}
+          {/* 3. Financial accounts, cash boxes and safe deposit boxes */}
           <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-xs space-y-4">
             <div className="flex justify-between items-center">
               <h4 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-                <CreditCard className="w-4.5 h-4.5 text-emerald-500" /> Cuentas Bancarias
+                <CreditCard className="w-4.5 h-4.5 text-emerald-500" /> Cuentas y Cajas
               </h4>
               <button
                 type="button"
                 onClick={() => setShowAddAccount(!showAddAccount)}
                 className="p-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 rounded-lg cursor-pointer"
-                title="Agregar cuenta bancaria"
+                title="Agregar cuenta o caja"
               >
                 <Plus className="w-4 h-4" />
               </button>
@@ -668,12 +740,21 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
 
             {showAddAccount && (
               <form onSubmit={handleAddAccount} className="bg-slate-50 p-3 rounded-xl border border-emerald-100 space-y-3 animate-slideDown">
-                <p className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Alta de Cuenta Bancaria / Caja</p>
+                <p className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Alta de cuenta o caja</p>
                 <div className="space-y-1.5">
+                  <select
+                    value={newAccType}
+                    onChange={(e) => setNewAccType(e.target.value as FinancialAccount["type"])}
+                    className="w-full bg-white border rounded px-2.5 py-1 text-xs outline-none cursor-pointer"
+                  >
+                    <option value="Banco">Cuenta bancaria</option>
+                    <option value="Caja">Caja de efectivo</option>
+                    <option value="Caja Fuerte">Caja de seguridad</option>
+                  </select>
                   <input 
                     type="text" 
                     required
-                    placeholder="Banco Galicia CC Pesos"
+                    placeholder={newAccType === "Banco" ? "Banco Galicia CC Pesos" : newAccType === "Caja" ? "Caja de cobranzas central" : "Caja de seguridad oficina"}
                     value={newAccName}
                     onChange={(e) => setNewAccName(e.target.value)}
                     className="w-full bg-white border rounded px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
@@ -697,6 +778,30 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
                       className="flex-1 bg-white border rounded px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
                     />
                   </div>
+                  {newAccType !== "Banco" && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                      <select
+                        required
+                        value={newAccResponsibleEmail}
+                        onChange={(e) => setNewAccResponsibleEmail(e.target.value)}
+                        className="bg-white border rounded px-2.5 py-1 text-xs outline-none cursor-pointer"
+                        aria-label="Responsable de la caja"
+                      >
+                        <option value="">Seleccionar responsable</option>
+                        {(tenant.activeUsers || []).filter(user => user.active).map(user => (
+                          <option key={user.email} value={user.email}>{user.name}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="tel"
+                        required
+                        placeholder="Teléfono del responsable"
+                        value={newAccResponsiblePhone}
+                        onChange={(e) => setNewAccResponsiblePhone(e.target.value)}
+                        className="bg-white border rounded px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-2 justify-end">
                   <button 
@@ -710,14 +815,14 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
                     type="submit" 
                     className="px-3 py-1 bg-emerald-600 text-white rounded text-[10px] font-bold cursor-pointer"
                   >
-                    Registrar Cuenta
+                    Registrar
                   </button>
                 </div>
               </form>
             )}
 
             <div className="space-y-2.5">
-              {accounts.filter(a => a.type === "Banco").map((acc) => (
+              {accounts.map((acc) => (
                 editingAccountId === acc.id ? (
                   <form key={acc.id} onSubmit={handleUpdateAccount} className="p-3 bg-emerald-50/50 rounded-lg border border-emerald-200 space-y-2">
                     <input
@@ -727,6 +832,15 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
                       onChange={(e) => setEditAccName(e.target.value)}
                       className="w-full bg-white border rounded px-2.5 py-1 text-xs outline-none focus:border-emerald-500"
                     />
+                    <select
+                      value={editAccType}
+                      onChange={(e) => setEditAccType(e.target.value as FinancialAccount["type"])}
+                      className="w-full bg-white border rounded px-2.5 py-1 text-xs outline-none"
+                    >
+                      <option value="Banco">Cuenta bancaria</option>
+                      <option value="Caja">Caja de efectivo</option>
+                      <option value="Caja Fuerte">Caja de seguridad</option>
+                    </select>
                     <div className="flex gap-2">
                       <select
                         value={editAccCurrency}
@@ -747,6 +861,30 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
                         aria-label="Saldo de la cuenta"
                       />
                     </div>
+                    {editAccType !== "Banco" && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <select
+                          required
+                          value={editAccResponsibleEmail}
+                          onChange={(e) => setEditAccResponsibleEmail(e.target.value)}
+                          className="bg-white border rounded px-2.5 py-1 text-xs outline-none"
+                          aria-label="Responsable de la caja"
+                        >
+                          <option value="">Seleccionar responsable</option>
+                          {(tenant.activeUsers || []).filter(user => user.active).map(user => (
+                            <option key={user.email} value={user.email}>{user.name}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="tel"
+                          required
+                          placeholder="Teléfono del responsable"
+                          value={editAccResponsiblePhone}
+                          onChange={(e) => setEditAccResponsiblePhone(e.target.value)}
+                          className="bg-white border rounded px-2.5 py-1 text-xs outline-none"
+                        />
+                      </div>
+                    )}
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
@@ -767,7 +905,14 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
                   <div key={acc.id} className="p-2.5 bg-slate-50 rounded-lg border text-xs flex justify-between items-center gap-2">
                     <div className="min-w-0">
                       <p className="font-bold text-slate-800 truncate">{acc.name}</p>
-                      <p className="text-[10px] text-slate-400 font-mono">Moneda: {acc.currency}</p>
+                      <p className="text-[10px] text-slate-400 font-mono">
+                        {acc.type === "Banco" ? "Cuenta bancaria" : acc.type === "Caja" ? "Caja de efectivo" : "Caja de seguridad"} · {acc.currency}
+                      </p>
+                      {acc.responsibleName && (
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          Responsable: {acc.responsibleName}{acc.responsiblePhone ? ` · ${acc.responsiblePhone}` : ""}
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="font-mono font-bold text-slate-700">
@@ -787,8 +932,8 @@ export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefr
                   </div>
                 )
               ))}
-              {accounts.filter(a => a.type === "Banco").length === 0 && (
-                <p className="text-center text-[10px] text-slate-400 py-3">No hay cuentas bancarias registradas</p>
+              {accounts.length === 0 && (
+                <p className="text-center text-[10px] text-slate-400 py-3">No hay cuentas ni cajas registradas</p>
               )}
             </div>
           </div>

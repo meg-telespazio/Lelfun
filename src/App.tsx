@@ -36,6 +36,7 @@ import OcrPanel from "./components/OcrPanel.js";
 import ConsortiumPanel from "./components/ConsortiumPanel.js";
 import MarketplacePanel from "./components/MarketplacePanel.js";
 import TenantProfilePanel from "./components/TenantProfilePanel.js";
+import SuperAdminPanel from "./components/SuperAdminPanel.js";
 
 // Import Landing, Login and SignUp
 import LandingAndAuth from "./components/LandingAndAuth.js";
@@ -69,6 +70,7 @@ import {
   DollarSign,
   CheckCircle2,
   ShoppingBag,
+  Gavel,
   Edit2,
   Trash2,
   LogOut
@@ -82,13 +84,14 @@ const TENANT_PROFILES = [
 ];
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'landing' | 'login' | 'register' | 'app'>('landing');
-  const [sessionUser, setSessionUser] = useState<{ email: string; name: string; role: string; tenantId: string; isMarketplaceSupplier?: boolean } | null>(null);
+  const [currentView, setCurrentView] = useState<'landing' | 'login' | 'register' | 'app' | 'superadmin'>('landing');
+  const [sessionUser, setSessionUser] = useState<{ email: string; name: string; role: string; tenantId: string; isMarketplaceSupplier?: boolean; modules?: string[] } | null>(null);
   
   const [activeTenantId, setActiveTenantId] = useState("tenant-lelfun");
   const [userEmail, setUserEmail] = useState("");
   const [sidebarPinned, setSidebarPinned] = useState(true);
   const [activeTab, setActiveTab] = useState("control-obra");
+  const [marketplaceSection, setMarketplaceSection] = useState("catalog");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [syncTimestamp, setSyncTimestamp] = useState<string>("");
@@ -189,6 +192,22 @@ export default function App() {
   useEffect(() => {
     // Detect connected user and assign active tenant on mount
     const detectUserAndTenant = async () => {
+      // A fresh page load must always begin at the public landing. Clear only
+      // the active session markers; tenant registration data remains intact.
+      try {
+        await supabase.auth.signOut({ scope: "local" });
+      } catch (error) {
+        console.warn("No se pudo limpiar la sesión anterior de Supabase", error);
+      }
+      localStorage.removeItem("lelf_user_email");
+      localStorage.removeItem("lelf_user_name");
+      localStorage.setItem("lelf_logged_out", "true");
+      setSessionUser(null);
+      setUserEmail("");
+      setCurrentView("landing");
+      setIsLoading(false);
+      return;
+
       // If the user explicitly logged out, do not perform automatic login
       if (localStorage.getItem("lelf_logged_out") === "true") {
         setCurrentView("landing");
@@ -292,8 +311,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetchTenantState(activeTenantId);
-  }, [activeTenantId]);
+    if (currentView === "app" && sessionUser && !sessionUser.isMarketplaceSupplier) {
+      fetchTenantState(activeTenantId);
+    }
+  }, [activeTenantId, currentView, sessionUser?.tenantId, sessionUser?.isMarketplaceSupplier]);
 
   const activeTenantProfile = useMemo(() => {
     // 1. If we have a tenantProfile from server, and its ID matches the activeTenantId, use it!
@@ -670,29 +691,65 @@ export default function App() {
     return Math.round(sum / projects.length);
   }, [projects]);
 
+  if (currentView === "superadmin") {
+    return <SuperAdminPanel onLogout={handleLogout} />;
+  }
+
   if (currentView !== "app") {
     return (
       <LandingAndAuth 
-        onLoginSuccess={(email, tenantId, userName, isSupplier) => {
+        onLoginSuccess={async (email, _tenantId, userName, _isSupplier) => {
+          const { data: sessionData } = await supabase.auth.getSession();
+          const token = sessionData.session?.access_token;
+          if (!token) {
+            await handleLogout();
+            alert("No se pudo validar la sesión.");
+            return;
+          }
+          const accessResponse = await fetch("/api/auth/access-context", { headers: { Authorization: `Bearer ${token}` } });
+          const access = await accessResponse.json();
+          if (!accessResponse.ok) {
+            await handleLogout();
+            alert(access.error || "El usuario no tiene acceso habilitado.");
+            return;
+          }
           localStorage.removeItem("lelf_logged_out");
           setUserEmail(email);
+          if (access.environment === "SUPERADMIN") {
+            setSessionUser({ email, name: userName, role: "Superadmin", tenantId: "platform" });
+            setCurrentView("superadmin");
+            return;
+          }
+          const isSupplier = access.environment === "SUPPLIER";
+          const tenantId = isSupplier ? access.supplier.supplier_id : (access.tenant.local_tenant_id || access.tenant.tenant_id);
+          if (!isSupplier && access.license?.blocked) {
+            await handleLogout();
+            alert("La licencia del tenant está suspendida o vencida. Contacte al administrador de Lelfun.");
+            return;
+          }
+          const modules = isSupplier ? ["marketplace"] : ["owner", "admin"].includes(access.tenant.role)
+            ? ["projects", "treasury", "budgets", "procurement", "sales", "consortium", "ocr", "marketplace", "tenant_settings"]
+            : (access.tenant.tenant_member_modules || []).filter((module: any) => module.can_read).map((module: any) => module.module_key);
           setActiveTenantId(tenantId);
           setSessionUser({
             email,
             name: userName,
-            role: isSupplier ? "Proveedor Marketplace" : "Administrador General",
+            role: isSupplier ? access.supplier.role : access.tenant.role,
             tenantId,
-            isMarketplaceSupplier: isSupplier
+            isMarketplaceSupplier: isSupplier,
+            modules
           });
           
           if (isSupplier) {
             setActiveTab("marketplace");
+            setMarketplaceSection("supplier");
           } else {
-            setActiveTab("control-obra");
+            const moduleToTab: Record<string, string> = { projects: "control-obra", treasury: "tesoreria-caja", budgets: "presupuestos", procurement: "compras", sales: "ventas", consortium: "consorcio", ocr: "ocr", marketplace: "marketplace", tenant_settings: "tenant-profile" };
+            setActiveTab(moduleToTab[modules[0]] || "marketplace");
           }
           
           setCurrentView("app");
-          fetchTenantState(tenantId);
+          if (!isSupplier) fetchTenantState(tenantId);
         }}
         initialView={currentView === "landing" ? "landing" : (currentView === "login" ? "login" : "register")}
       />
@@ -700,7 +757,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex font-sans text-slate-800 antialiased" id="lelfun-app-root">
+    <div className="min-h-screen bg-slate-100 flex font-sans text-slate-800 antialiased" id="lelfun-app-root">
       
       {/* 1. Sidebar Container (Left) */}
       <aside className={`fixed inset-y-0 left-0 z-40 bg-slate-900 text-white flex flex-col border-r border-slate-800 transition-all duration-300 ${
@@ -711,8 +768,8 @@ export default function App() {
         {/* Sidebar Header */}
         <div className="p-4 border-b border-slate-800 flex items-center justify-between shrink-0 overflow-hidden">
           <div className={`flex items-center transition-all duration-300 ${sidebarPinned ? "gap-2.5" : "gap-0 md:group-hover:gap-2.5"}`}>
-            <div className="p-2 bg-amber-500 text-slate-950 rounded-lg shadow-sm font-bold flex items-center justify-center shrink-0">
-              <Hammer className="w-5 h-5 animate-pulse" />
+            <div className="w-10 h-10 bg-white rounded-lg shadow-sm flex items-center justify-center shrink-0 overflow-hidden">
+              <img src="/lelfun.png" alt="Lelfun" className="w-full h-full object-cover" />
             </div>
             <div className={`transition-all duration-300 overflow-hidden ${
               sidebarPinned 
@@ -723,13 +780,13 @@ export default function App() {
                 LELFUN <span className="text-[9px] font-semibold bg-amber-500/15 border border-amber-500/30 text-amber-400 px-1 py-0.2 rounded-sm uppercase tracking-wider">SaaS</span>
               </h1>
               <p className="text-[9px] text-slate-400 font-mono tracking-wide whitespace-nowrap">
-                ERP Obras & Ingesta OCR
+                {sessionUser?.isMarketplaceSupplier ? "Portal de Proveedores" : "ERP Obras & Ingesta OCR"}
               </p>
             </div>
           </div>
           {/* Action buttons (Pin on desktop, Close on mobile) */}
           <div className="flex items-center gap-1 shrink-0">
-            <button 
+            <button
               onClick={() => setSidebarPinned(!sidebarPinned)}
               className={`hidden md:block p-1.5 text-slate-400 hover:text-white rounded hover:bg-slate-850 cursor-pointer transition-colors ${
                 sidebarPinned ? "" : "opacity-0 md:group-hover:opacity-100"
@@ -738,7 +795,7 @@ export default function App() {
             >
               {sidebarPinned ? <Pin className="w-3.5 h-3.5 text-amber-400 fill-amber-400" /> : <Pin className="w-3.5 h-3.5 rotate-45" />}
             </button>
-            <button 
+            <button
               onClick={() => setMobileSidebarOpen(false)} 
               className="md:hidden p-1 text-slate-400 hover:text-white cursor-pointer"
             >
@@ -748,6 +805,7 @@ export default function App() {
         </div>
 
         {/* Tenant Profile Section (Auto-detected, no dropdown) */}
+        {!sessionUser?.isMarketplaceSupplier && (
         <div className="p-4 border-b border-slate-800 bg-slate-950/25 shrink-0 overflow-hidden">
           <div className={`transition-all duration-300 ${
             sidebarPinned 
@@ -766,7 +824,7 @@ export default function App() {
               <span>CUIT: {activeTenantProfile.cuit || "N/A"}</span>
               <span className="text-amber-500 font-semibold">{activeTenantProfile.defaultCurrency}</span>
             </div>
-            <button
+            {["owner", "admin"].includes((sessionUser?.role || "").toLowerCase()) && <button
               onClick={() => {
                 setActiveTab("tenant-profile");
                 setMobileSidebarOpen(false);
@@ -779,14 +837,14 @@ export default function App() {
             >
               <Building2 className="w-3.5 h-3.5 shrink-0" />
               Ver Perfil de Empresa
-            </button>
+            </button>}
           </div>
           <div className={`flex flex-col items-center gap-1 ${
             sidebarPinned 
               ? "hidden" 
               : "block md:group-hover:hidden max-md:hidden"
           }`}>
-            <button
+            {["owner", "admin"].includes((sessionUser?.role || "").toLowerCase()) && <button
               onClick={() => {
                 setActiveTab("tenant-profile");
                 setMobileSidebarOpen(false);
@@ -795,13 +853,33 @@ export default function App() {
               title="Ver Perfil de Empresa"
             >
               <Building2 className="w-4 h-4" />
-            </button>
+            </button>}
             <span className="text-[8px] font-mono text-slate-500 uppercase font-bold mt-1">{activeTenantProfile.defaultCurrency}</span>
           </div>
         </div>
+        )}
 
         {/* Navigation Groups */}
         <div className="flex-1 overflow-y-auto py-4 px-3 space-y-6">
+          {sessionUser?.isMarketplaceSupplier && (
+            <div className="space-y-1">
+              <span className={`px-3 text-[9px] font-bold uppercase tracking-widest text-slate-500 block mb-2 ${sidebarPinned ? "opacity-100" : "opacity-0 md:group-hover:opacity-100"}`}>Portal de Proveedores</span>
+              {[
+                { id: "supplier", name: "Panel de mi empresa", icon: Building2 },
+                { id: "catalog", name: "Catálogo de productos", icon: ShoppingBag },
+                { id: "publish", name: "Publicar y administrar", icon: Plus },
+                { id: "sales", name: "Ventas y solicitudes", icon: ShoppingCart },
+                { id: "tenders", name: "Licitaciones", icon: Gavel },
+                { id: "notifications", name: "Notificaciones", icon: FileText },
+                { id: "reputation", name: "Reputación y reclamos", icon: Award }
+              ].map((item, index) => {
+                const Icon = item.icon;
+                const isActive = activeTab === "marketplace" && marketplaceSection === item.id;
+                return <button key={`${item.name}-${index}`} onClick={() => { setActiveTab("marketplace"); setMarketplaceSection(item.id); setMobileSidebarOpen(false); }} className={`w-full flex items-center rounded-lg p-2.5 text-xs font-semibold transition-all cursor-pointer ${sidebarPinned ? "gap-2.5" : "gap-0 md:group-hover:gap-2.5 justify-center md:group-hover:justify-start"} ${isActive ? "bg-amber-500 text-slate-950 font-bold" : "text-slate-300 hover:text-white hover:bg-slate-800/60"}`}><Icon className="w-4 h-4 shrink-0" /><span className={`${sidebarPinned ? "w-auto opacity-100" : "w-0 opacity-0 md:group-hover:w-auto md:group-hover:opacity-100"} overflow-hidden whitespace-nowrap`}>{item.name}</span></button>;
+              })}
+            </div>
+          )}
+          {!sessionUser?.isMarketplaceSupplier && (<>
           {/* Group 1: Empresa / Interno */}
           <div className="space-y-1">
             <span className={`px-3 text-[9px] font-bold uppercase tracking-widest text-slate-500 block mb-2 transition-opacity duration-200 truncate ${
@@ -810,13 +888,13 @@ export default function App() {
               Empresa / Interno
             </span>
             {[
-              { id: "control-obra", name: "Control de Obra", icon: Hammer },
-              { id: "tesoreria-caja", name: "Tesorería y Caja", icon: Wallet },
-              { id: "presupuestos", name: "Presupuestos", icon: TrendingUp },
-              { id: "compras", name: "Logística y Compras", icon: ShoppingCart },
-              { id: "ventas", name: "Ventas y Cuotas", icon: Building2 },
-              { id: "consorcio", name: "Consorcios y Garantías", icon: Layers }
-            ].map(tab => {
+              { id: "control-obra", module: "projects", name: "Control de Obra", icon: Hammer },
+              { id: "tesoreria-caja", module: "treasury", name: "Tesorería y Caja", icon: Wallet },
+              { id: "presupuestos", module: "budgets", name: "Presupuestos", icon: TrendingUp },
+              { id: "compras", module: "procurement", name: "Logística y Compras", icon: ShoppingCart },
+              { id: "ventas", module: "sales", name: "Ventas y Cuotas", icon: Building2 },
+              { id: "consorcio", module: "condominium", name: "Consorcios y Garantías", icon: Layers }
+            ].filter(tab => sessionUser?.modules?.includes(tab.module)).map(tab => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               return (
@@ -850,7 +928,7 @@ export default function App() {
           </div>
 
           {/* Group 2: Servicios Globales */}
-          <div className="space-y-1 pt-1 border-t border-slate-800/40">
+          {sessionUser?.modules?.includes("marketplace") && <div className="space-y-1 pt-1 border-t border-slate-800/40">
             <span className={`px-3 text-[9px] font-bold uppercase tracking-widest text-slate-500 block mb-2 transition-opacity duration-200 truncate ${
               sidebarPinned ? "opacity-100" : "opacity-0 md:group-hover:opacity-100 max-md:opacity-100"
             }`}>
@@ -875,10 +953,10 @@ export default function App() {
                 Marketplace Global
               </span>
             </button>
-          </div>
+          </div>}
 
           {/* Group 3: OCR Ingesta Separada */}
-          <div className="space-y-1 pt-1 border-t border-slate-800/40">
+          {sessionUser?.modules?.includes("ocr") && <div className="space-y-1 pt-1 border-t border-slate-800/40">
             <span className={`px-3 text-[9px] font-bold uppercase tracking-widest text-slate-500 block mb-2 transition-opacity duration-200 truncate ${
               sidebarPinned ? "opacity-100" : "opacity-0 md:group-hover:opacity-100 max-md:opacity-100"
             }`}>
@@ -908,7 +986,8 @@ export default function App() {
                 IA
               </span>
             </button>
-          </div>
+          </div>}
+          </>)}
         </div>
 
         {/* Log Out button */}
@@ -964,12 +1043,10 @@ export default function App() {
               <Menu className="w-4.5 h-4.5" />
             </button>
             <div className="hidden md:block">
-              <span className="text-xs text-slate-400 font-bold font-mono">ESTACIÓN CORPORATIVA CONSOLIDADA</span>
+              <span className="text-xs text-slate-400 font-bold font-mono">{sessionUser?.isMarketplaceSupplier ? "PORTAL COMERCIAL DE PROVEEDORES" : "ESTACIÓN CORPORATIVA CONSOLIDADA"}</span>
             </div>
             <div className="md:hidden">
-              <h2 className="font-extrabold text-xs tracking-tight text-white flex items-center gap-1">
-                LELFUN <span className="text-[8px] bg-amber-500 text-slate-950 px-1 rounded font-bold">SaaS</span>
-              </h2>
+              <img src="/lelfun.png" alt="Lelfun" className="w-8 h-8 rounded-md object-cover bg-white" />
             </div>
           </div>
 
@@ -989,7 +1066,7 @@ export default function App() {
             </div>
 
             {/* Auditor select */}
-            {projects.length > 0 && (
+            {!sessionUser?.isMarketplaceSupplier && projects.length > 0 && (
               <div className="flex items-center gap-1.5 text-slate-300 md:text-slate-700">
                 <span className="text-slate-400 md:text-slate-500 hidden md:inline text-[11px] font-medium">Auditar Obra:</span>
                 <select
@@ -1063,7 +1140,7 @@ export default function App() {
           ) : (
             <div className="animate-fade-in">
               {/* Tab 1: Control de Obra / Gantt Dashboard */}
-              {activeTab === "control-obra" && (
+              {activeTab === "control-obra" && sessionUser?.modules?.includes("projects") && (
                 <div className="space-y-6">
                   {/* Header Action Bar */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-100 shadow-2xs animate-fade-in">
@@ -1467,7 +1544,7 @@ export default function App() {
             )}
 
             {/* Tab 2: Finance Ledger & Arqueos */}
-            {activeTab === "tesoreria-caja" && (
+            {activeTab === "tesoreria-caja" && sessionUser?.modules?.includes("treasury") && (
               <FinancePanel 
                 accounts={accounts}
                 movements={movements}
@@ -1481,7 +1558,7 @@ export default function App() {
             )}
 
             {/* Tab 3: Presupuestos */}
-            {activeTab === "presupuestos" && (
+            {activeTab === "presupuestos" && sessionUser?.modules?.includes("budgets") && (
               <div className="space-y-5">
                 {!showBudgetDetail ? (
                   <>
@@ -1568,7 +1645,7 @@ export default function App() {
             )}
 
             {/* Tab 4: Compras */}
-            {activeTab === "compras" && (
+            {activeTab === "compras" && sessionUser?.modules?.includes("procurement") && (
               <ProcurementPanel 
                 purchaseRequests={purchaseRequests}
                 counterparties={counterparties}
@@ -1580,7 +1657,7 @@ export default function App() {
             )}
 
             {/* Tab 5: Ventas */}
-            {activeTab === "ventas" && (
+            {activeTab === "ventas" && sessionUser?.modules?.includes("sales") && (
               <SalesPanel 
                 units={units}
                 opportunities={salesOpportunities}
@@ -1595,7 +1672,7 @@ export default function App() {
             )}
 
             {/* Tab 6: OCR Ingest */}
-            {activeTab === "ocr" && (
+            {activeTab === "ocr" && sessionUser?.modules?.includes("ocr") && (
               <div className="flex flex-col items-center justify-center py-4">
                 {/* Visual simulator header on desktop only */}
                 <div className="hidden md:flex flex-col items-center text-center max-w-md mb-6 space-y-2">
@@ -1631,7 +1708,7 @@ export default function App() {
             )}
 
             {/* Tab 7: Consorcios */}
-            {activeTab === "consorcio" && (
+            {activeTab === "consorcio" && sessionUser?.modules?.includes("condominium") && (
               <ConsortiumPanel 
                 condominiums={earlyCondominiums}
                 maintenanceRequests={maintenanceRequests}
@@ -1645,18 +1722,18 @@ export default function App() {
             )}
 
             {/* Tab 8: Marketplace */}
-            {activeTab === "marketplace" && (
+            {activeTab === "marketplace" && sessionUser?.modules?.includes("marketplace") && (
               <MarketplacePanel 
-                tenders={tenders}
-                suppliers={marketplaceSuppliers}
-                counterparties={counterparties}
                 tenantId={activeTenantId}
-                onRefresh={() => fetchTenantState(activeTenantId)}
+                userEmail={userEmail}
+                isSupplier={Boolean(sessionUser?.isMarketplaceSupplier)}
+                projects={projects}
+                initialSection={marketplaceSection}
               />
             )}
 
             {/* Tab 9: Tenant / Company Profile Config */}
-            {activeTab === "tenant-profile" && (
+            {activeTab === "tenant-profile" && ["owner", "admin"].includes((sessionUser?.role || "").toLowerCase()) && (
               <TenantProfilePanel 
                 tenant={tenantProfile}
                 accounts={accounts}
