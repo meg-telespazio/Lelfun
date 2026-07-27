@@ -7,7 +7,6 @@ import express, { Request, Response } from "express";
 import path from "path";
 import dotenv from "dotenv";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
@@ -53,6 +52,10 @@ const supabaseAdmin = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_R
 
 // Setup JSON body parsing with high limit for base64 file uploads
 app.use(express.json({ limit: "20mb" }));
+
+app.get("/api/health", (_req: Request, res: Response) => {
+  res.json({ status: "ok", runtime: process.env.VERCEL ? "vercel" : "node", timestamp: new Date().toISOString() });
+});
 
 // Enforce environment boundaries at the API edge. The UI is not trusted to
 // decide whether somebody is a tenant user, supplier, or platform admin.
@@ -4129,6 +4132,7 @@ async function startServer() {
   // Vite dev middleware for development environment
   if (process.env.NODE_ENV !== "production") {
     console.log("Configuring Vite middleware in development...");
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -4149,4 +4153,11 @@ async function startServer() {
   });
 }
 
-startServer();
+export { app };
+export default app;
+
+// Vercel imports the Express application as a serverless function. A local or
+// container deployment still starts the traditional long-running HTTP server.
+if (!process.env.VERCEL) {
+  void startServer();
+}
