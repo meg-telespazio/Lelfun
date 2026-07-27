@@ -1,57 +1,76 @@
 import React, { useState, useEffect } from "react";
-import { 
-  Hammer, 
-  Sparkles, 
-  ArrowRight, 
-  Check, 
-  Lock, 
-  Mail, 
-  Phone, 
-  Building2, 
-  User, 
-  Briefcase, 
-  ShieldAlert, 
-  RefreshCw, 
-  Star, 
-  TrendingUp, 
-  DollarSign, 
-  CheckCircle2, 
+import {
+  Sparkles,
+  ArrowRight,
+  Check,
+  Lock,
+  Mail,
+  Phone,
+  Building2,
+  Briefcase,
+  ShieldAlert,
+  RefreshCw,
+  Star,
+  TrendingUp,
+  DollarSign,
+  CheckCircle2,
   X,
   ChevronRight,
   MapPin,
-  Globe,
   FileText,
   BadgePercent,
-  Compass
+  Compass,
+  ShoppingCart,
 } from "lucide-react";
 import { supabase } from "../supabaseClient";
 
 // Lelfun custom logo
-export function LelfunLogo({ className = "w-12 h-12" }: { className?: string }) {
+export function LelfunLogo({
+  className = "w-12 h-12",
+}: {
+  className?: string;
+}) {
   return (
-    <div className={`relative flex items-center justify-center ${className}`}>
-      <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full drop-shadow-sm">
-        <rect width="100" height="100" rx="24" fill="#0f172a" />
-        <line x1="20" y1="50" x2="80" y2="50" stroke="#334155" strokeWidth="2" strokeDasharray="4 4" />
-        <line x1="50" y1="20" x2="50" y2="80" stroke="#334155" strokeWidth="2" strokeDasharray="4 4" />
-        <path d="M 35 25 L 35 70 L 65 70" stroke="#f59e0b" strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M 65 30 C 65 20, 52 20, 52 35 L 52 75" stroke="#f8fafc" strokeWidth="9" strokeLinecap="round" />
-        <path d="M 44 42 L 60 42" stroke="#f8fafc" strokeWidth="9" strokeLinecap="round" />
-      </svg>
+    <div
+      className={`relative flex items-center justify-center overflow-hidden rounded-xl bg-white shadow-sm ${className}`}
+    >
+      <img
+        src="/lelfun.png"
+        alt="Lelfun"
+        className="w-full h-full object-cover"
+      />
     </div>
   );
 }
 
+function FeatureCard({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
+  return <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2.5 hover:border-amber-500/50 transition-all"><div className="w-8 h-8 bg-amber-500/10 text-amber-400 rounded-lg flex items-center justify-center [&>svg]:w-4 [&>svg]:h-4">{icon}</div><h3 className="text-sm font-bold text-white">{title}</h3><p className="text-[11px] text-slate-400 leading-relaxed font-semibold">{text}</p></div>;
+}
+
 interface LandingAndAuthProps {
-  onLoginSuccess: (email: string, tenantId: string, userName: string, isSupplier: boolean) => void;
+  onLoginSuccess: (
+    email: string,
+    tenantId: string,
+    userName: string,
+    isSupplier: boolean,
+  ) => void;
+  onOpenMarketplace: () => void;
   initialView?: "landing" | "login" | "register";
 }
 
-export default function LandingAndAuth({ onLoginSuccess, initialView = "landing" }: LandingAndAuthProps) {
-  const [view, setView] = useState<"landing" | "login" | "register">(initialView);
-  
+export default function LandingAndAuth({
+  onLoginSuccess,
+  onOpenMarketplace,
+  initialView = "landing",
+}: LandingAndAuthProps) {
+  const [view, setView] = useState<"landing" | "login" | "register">(
+    initialView,
+  );
+
   // Login State
-  const [loginType, setLoginType] = useState<"tenant" | "marketplace">("tenant");
+  const [loginType, setLoginType] = useState<"tenant" | "marketplace">(
+    "tenant",
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -59,9 +78,11 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
   const [successMsg, setSuccessMsg] = useState("");
 
   // Register State
-  const [registerType, setRegisterType] = useState<"tenant" | "marketplace">("tenant");
+  const [registerType, setRegisterType] = useState<
+    "tenant" | "marketplace" | "buyer"
+  >("tenant");
   const [regStep, setRegStep] = useState(1); // 1 = User profile, 2 = Tenant Profile (only for tenant type)
-  
+
   // Registration Profile Form
   const [regNombre, setRegNombre] = useState("");
   const [regApellido, setRegApellido] = useState("");
@@ -69,7 +90,7 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
   const [regPhone, setRegPhone] = useState("");
   const [regPassword, setRegPassword] = useState("");
   const [regConfirmPassword, setRegConfirmPassword] = useState("");
-  
+
   // Registration Tenant Profile Form
   const [tenNombreFantasia, setTenNombreFantasia] = useState("");
   const [tenRazonSocial, setTenRazonSocial] = useState("");
@@ -85,6 +106,12 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
   // Registration Supplier Form (Marketplace type only)
   const [suppEmpresa, setSuppEmpresa] = useState("");
   const [suppCuit, setSuppCuit] = useState("");
+  const [suppCompanyType, setSuppCompanyType] = useState("");
+  const [suppYearsRange, setSuppYearsRange] = useState("0-2");
+  const [suppEmployeesRange, setSuppEmployeesRange] = useState("1-10");
+  const [suppRevenueRange, setSuppRevenueRange] = useState("Hasta ARS 100M");
+  const [suppWebsite, setSuppWebsite] = useState("");
+  const [suppDescription, setSuppDescription] = useState("");
 
   // Demo Request State
   const [showDemoModal, setShowDemoModal] = useState(false);
@@ -99,8 +126,12 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
   // Password rules validation
   const passLength = password.length >= 8 || regPassword.length >= 8;
   const passUpper = /[A-Z]/.test(password) || /[A-Z]/.test(regPassword);
-  const passSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(password) || /[!@#$%^&*(),.?":{}|<>]/.test(regPassword);
-  const passAlphaNum = (/[a-zA-Z]/.test(password) && /[0-9]/.test(password)) || (/[a-zA-Z]/.test(regPassword) && /[0-9]/.test(regPassword));
+  const passSpecial =
+    /[!@#$%^&*(),.?":{}|<>]/.test(password) ||
+    /[!@#$%^&*(),.?":{}|<>]/.test(regPassword);
+  const passAlphaNum =
+    (/[a-zA-Z]/.test(password) && /[0-9]/.test(password)) ||
+    (/[a-zA-Z]/.test(regPassword) && /[0-9]/.test(regPassword));
   const passValid = passLength && passUpper && passSpecial && passAlphaNum;
 
   // Real-time signup validation helpers
@@ -119,7 +150,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
     setLoading(true);
 
     if (!passValid) {
-      setErrorMsg("La contraseña no cumple con los requisitos mínimos de seguridad.");
+      setErrorMsg(
+        "La contraseña no cumple con los requisitos mínimos de seguridad.",
+      );
       setLoading(false);
       return;
     }
@@ -132,70 +165,18 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
       });
 
       if (error) {
-        // Fallback simulated local verification if user wants to play instantly and Supabase has no seeded users yet
-        console.warn("Supabase Auth error:", error.message);
-        console.log("Entering high-fidelity developer simulation mode.");
-        
-        // Let's check if there is a local mock user stored in localStorage
-        const storedPass = localStorage.getItem(`lelf_pass_${email}`);
-        if (storedPass === password) {
-          const storedName = localStorage.getItem(`lelf_name_${email}`) || email.split("@")[0];
-          const storedTenantId = localStorage.getItem(`tenant_id_${email}`) || "tenant-lelfun";
-          const isSupplier = localStorage.getItem(`is_supplier_${email}`) === "true";
-          
-          localStorage.setItem("lelf_user_email", email);
-          localStorage.setItem("lelf_user_name", storedName);
-          
-          onLoginSuccess(email, storedTenantId, storedName, isSupplier);
-          return;
-        } else if (email === "mariano.telespazio@gmail.com" || email === "demo@lelfun.com") {
-          // Direct bypass for quick review and testing
-          const isSupplier = loginType === "marketplace";
-          const tenantId = isSupplier ? "tenant-lelfun" : "tenant-lelfun";
-          const uName = email === "mariano.telespazio@gmail.com" ? "Mariano Telespazio" : "Usuario Demo";
-          
-          localStorage.setItem("lelf_user_email", email);
-          localStorage.setItem("lelf_user_name", uName);
-          localStorage.setItem(`is_supplier_${email}`, String(isSupplier));
-          localStorage.setItem(`tenant_id_${email}`, tenantId);
-          
-          onLoginSuccess(email, tenantId, uName, isSupplier);
-          return;
-        }
-        
-        throw new Error(error.message);
+        throw new Error("Correo o contraseña incorrectos.");
       }
 
       if (data.user) {
         const uEmail = data.user.email || email;
-        const isSupplier = localStorage.getItem(`is_supplier_${uEmail}`) === "true";
-        let tenantId = localStorage.getItem(`tenant_id_${uEmail}`);
-
-        try {
-          const res = await fetch(`/api/me?user_email=${encodeURIComponent(uEmail)}&tenant_id=${encodeURIComponent(tenantId || "")}`);
-          if (res.ok) {
-            const me = await res.json();
-            if (me.tenantId) {
-              tenantId = me.tenantId;
-              localStorage.setItem(`tenant_id_${uEmail}`, me.tenantId);
-            }
-          }
-        } catch (err) {
-          console.warn("Could not query server /api/me on login", err);
-        }
-
-        if (!tenantId) {
-          tenantId = "tenant-lelfun";
-        }
         const uName = data.user.user_metadata?.nombre || uEmail.split("@")[0];
-
-        localStorage.setItem("lelf_user_email", uEmail);
-        localStorage.setItem("lelf_user_name", uName);
-
-        onLoginSuccess(uEmail, tenantId, uName, isSupplier);
+        onLoginSuccess(uEmail, "", uName, false);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || "Credenciales incorrectas o error de conexión.");
+      setErrorMsg(
+        err.message || "Credenciales incorrectas o error de conexión.",
+      );
     } finally {
       setLoading(false);
     }
@@ -215,7 +196,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
     // Passwords requirements check
     const regPassScore = getPasswordStrengthScore(regPassword);
     if (regPassScore < 4) {
-      setErrorMsg("La contraseña debe cumplir todos los requisitos de seguridad.");
+      setErrorMsg(
+        "La contraseña debe cumplir todos los requisitos de seguridad.",
+      );
       return;
     }
 
@@ -233,6 +216,7 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
 
     try {
       // 1. SignUp in Supabase Auth (wrapped in try-catch to keep registration resilient in sandbox environments)
+      let authToken = "";
       try {
         const { data, error } = await supabase.auth.signUp({
           email: regEmail,
@@ -241,21 +225,30 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
             data: {
               nombre: `${regNombre} ${regApellido}`,
               telefono: regPhone,
-              user_type: registerType
-            }
-          }
+              user_type:
+                registerType === "buyer" ? "marketplace_buyer" : registerType,
+            },
+          },
         });
 
         if (error) {
-          console.warn("Supabase Auth sign up error:", error.message);
+          throw error;
         }
+        authToken = data.session?.access_token || "";
       } catch (sbErr) {
-        console.warn("Supabase client call threw an exception, proceeding with simulation database", sbErr);
+        if (registerType === "buyer") throw sbErr;
+        console.warn(
+          "Supabase client call threw an exception, proceeding with simulation database",
+          sbErr,
+        );
       }
 
       // Simulate registration state and sync to backend
       const userFullName = `${regNombre} ${regApellido}`;
-      const generatedTenantId = registerType === "tenant" ? `tenant-dyn-${Date.now()}` : "tenant-lelfun";
+      let generatedTenantId =
+        registerType === "tenant"
+          ? `tenant-dyn-${Date.now()}`
+          : "tenant-lelfun";
 
       if (registerType === "tenant") {
         // Create Tenant on our express backend
@@ -274,61 +267,129 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
             commercialAddress: fullLegalAddress,
             companyType: "Desarrolladora S.A.",
             cuit: tenCuit,
-            logoUrl: tenLogoUrl || "https://images.unsplash.com/photo-1541888946425-d81bb19240f5?q=80&w=100&auto=format&fit=crop",
+            logoUrl:
+              tenLogoUrl ||
+              "https://images.unsplash.com/photo-1541888946425-d81bb19240f5?q=80&w=100&auto=format&fit=crop",
             activeUsers: [
-              { name: userFullName, email: regEmail, role: "Administrador General", active: true }
-            ]
-          })
+              {
+                name: userFullName,
+                email: regEmail,
+                role: "Administrador General",
+                active: true,
+              },
+            ],
+          }),
         });
 
         if (!newTenantResponse.ok) {
-          throw new Error("No se pudo registrar la estructura del tenant en el servidor.");
+          throw new Error(
+            "No se pudo registrar la estructura del tenant en el servidor.",
+          );
         }
-      } else {
+      } else if (registerType === "marketplace") {
         // Register as Marketplace Supplier
         const newSupplierResponse = await fetch("/api/marketplace-suppliers", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: suppEmpresa,
+            tradeName: suppEmpresa,
+            ownerName: userFullName,
             contactEmail: regEmail,
             cuit: suppCuit,
+            phone: regPhone,
+            companyType: suppCompanyType,
+            yearsInBusinessRange: suppYearsRange,
+            employeesRange: suppEmployeesRange,
+            annualRevenueRange: suppRevenueRange,
+            website: suppWebsite,
+            description: suppDescription,
+            address: [tenDireccion, tenCiudad, tenProvincia]
+              .filter(Boolean)
+              .join(", "),
             categories: ["Estructuras", "Terminaciones", "Logística"],
-            serviceAreas: [tenProvincia || "Buenos Aires", "Nacional"]
-          })
+            serviceAreas: [tenProvincia || "Buenos Aires", "Nacional"],
+          }),
         });
 
         if (!newSupplierResponse.ok) {
-          throw new Error("No se pudo dar de alta el perfil de proveedor de marketplace.");
+          throw new Error(
+            "No se pudo dar de alta el perfil de proveedor de marketplace.",
+          );
         }
+      } else {
+        if (!authToken)
+          throw new Error(
+            "Debe confirmar el correo electrónico antes de crear la empresa compradora.",
+          );
+        const buyerResponse = await fetch(
+          "/api/marketplace/public/register-buyer",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${authToken}`,
+            },
+            body: JSON.stringify({
+              companyName: suppEmpresa,
+              legalName: suppEmpresa,
+              taxId: suppCuit,
+              phone: regPhone,
+              currency: "ARS",
+              address: [tenDireccion, tenCiudad, tenProvincia]
+                .filter(Boolean)
+                .join(", "),
+            }),
+          },
+        );
+        const buyer = await buyerResponse.json();
+        if (!buyerResponse.ok)
+          throw new Error(
+            buyer.error || "No se pudo crear la cuenta compradora",
+          );
+        generatedTenantId = buyer.tenantId;
       }
 
       // Save credentials in simulated localStorage for browser persistence / offline testing bypass
       localStorage.setItem(`lelf_pass_${regEmail}`, regPassword);
       localStorage.setItem(`lelf_name_${regEmail}`, userFullName);
       localStorage.setItem(`tenant_id_${regEmail}`, generatedTenantId);
-      localStorage.setItem(`is_supplier_${regEmail}`, String(registerType === "marketplace"));
+      localStorage.setItem(
+        `is_supplier_${regEmail}`,
+        String(registerType === "marketplace"),
+      );
 
       if (registerType === "tenant") {
         const fullLegalAddress = `${tenDireccion}, ${tenCiudad}, ${tenProvincia}, ${tenPais}`;
-        const companyName = tenNombreFantasia || tenRazonSocial || "Nueva Empresa";
-        
+        const companyName =
+          tenNombreFantasia || tenRazonSocial || "Nueva Empresa";
+
         localStorage.setItem(`tenant_name_${generatedTenantId}`, companyName);
         localStorage.setItem(`tenant_cuit_${generatedTenantId}`, tenCuit || "");
         localStorage.setItem(`tenant_currency_${generatedTenantId}`, "USD");
-        localStorage.setItem(`tenant_address_${generatedTenantId}`, fullLegalAddress);
-        localStorage.setItem(`tenant_logo_${generatedTenantId}`, tenLogoUrl || "");
+        localStorage.setItem(
+          `tenant_address_${generatedTenantId}`,
+          fullLegalAddress,
+        );
+        localStorage.setItem(
+          `tenant_logo_${generatedTenantId}`,
+          tenLogoUrl || "",
+        );
       }
 
       localStorage.setItem("lelf_user_email", regEmail);
       localStorage.setItem("lelf_user_name", userFullName);
 
       setSuccessMsg("¡Registro exitoso! Iniciando sesión automáticamente...");
-      
-      setTimeout(() => {
-        onLoginSuccess(regEmail, generatedTenantId, userFullName, registerType === "marketplace");
-      }, 1500);
 
+      setTimeout(() => {
+        onLoginSuccess(
+          regEmail,
+          generatedTenantId,
+          userFullName,
+          registerType === "marketplace",
+        );
+      }, 1500);
     } catch (err: any) {
       setErrorMsg(err.message || "Error al completar el registro.");
     } finally {
@@ -353,32 +414,86 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
 
   return (
     <div className="w-full min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans antialiased overflow-x-hidden selection:bg-amber-500 selection:text-slate-950">
-      
       {/* HEADER NAVBAR */}
       <header className="border-b border-slate-900 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40 px-6 py-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView("landing")}>
-            <LelfunLogo className="w-9 h-9" />
+          <div
+            className="flex items-center gap-3 cursor-pointer"
+            onClick={() => setView("landing")}
+          >
+            <img
+              src="/lelfun.png"
+              alt="Lelfun"
+              className="w-11 h-11 rounded-xl object-cover bg-white shadow-lg shadow-amber-500/10"
+            />
             <span className="font-extrabold text-base tracking-wider font-display text-white">
-              LELFUN <span className="text-[10px] text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded font-bold uppercase tracking-widest">SaaS</span>
+              LELFUN{" "}
+              <span className="text-[10px] text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded font-bold uppercase tracking-widest">
+                SaaS
+              </span>
             </span>
           </div>
 
           <nav className="hidden md:flex items-center gap-8 text-xs font-semibold text-slate-400">
-            <button onClick={() => { setView("landing"); setTimeout(() => document.getElementById("features")?.scrollIntoView({ behavior: 'smooth' }), 100); }} className="hover:text-white transition-colors cursor-pointer">Funcionalidades</button>
-            <button onClick={() => { setView("landing"); setTimeout(() => document.getElementById("pricing")?.scrollIntoView({ behavior: 'smooth' }), 100); }} className="hover:text-white transition-colors cursor-pointer">Planes y Sususcripciones</button>
-            <button onClick={() => setView("landing")} className="hover:text-white transition-colors cursor-pointer">Quiénes Somos</button>
+            <button
+              onClick={onOpenMarketplace}
+              className="text-amber-400 hover:text-amber-300 transition-colors cursor-pointer font-bold"
+            >
+              Marketplace
+            </button>
+            <button
+              onClick={() => {
+                setView("landing");
+                setTimeout(
+                  () =>
+                    document
+                      .getElementById("features")
+                      ?.scrollIntoView({ behavior: "smooth" }),
+                  100,
+                );
+              }}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              Funcionalidades
+            </button>
+            <button
+              onClick={() => {
+                setView("landing");
+                setTimeout(
+                  () =>
+                    document
+                      .getElementById("pricing")
+                      ?.scrollIntoView({ behavior: "smooth" }),
+                  100,
+                );
+              }}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              Planes y Sususcripciones
+            </button>
+            <button
+              onClick={() => setView("landing")}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              Quiénes Somos
+            </button>
           </nav>
 
           <div className="flex items-center gap-3">
-            <button 
-              onClick={() => { setView("login"); setLoginType("tenant"); }}
+            <button
+              onClick={() => {
+                setView("login");
+                setLoginType("tenant");
+              }}
               className="text-slate-300 hover:text-white text-xs font-bold px-3.5 py-2 transition-colors cursor-pointer"
             >
               Ingresar
             </button>
-            <button 
-              onClick={() => { setView("register"); setRegStep(1); }}
+            <button
+              onClick={() => {
+                setView("register");
+                setRegStep(1);
+              }}
               className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold rounded-lg transition-all cursor-pointer shadow-sm hover:shadow-md"
             >
               Registrarse
@@ -390,7 +505,6 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
       {/* VIEW: LANDING PAGE */}
       {view === "landing" && (
         <main className="flex-1">
-          
           {/* HERO SECTION */}
           <section className="relative py-20 px-6 overflow-hidden">
             <div className="max-w-5xl mx-auto text-center space-y-6 relative z-10">
@@ -398,21 +512,29 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                 ★ Control de Obras Civiles y Desarrollo Inmobiliario
               </span>
               <h1 className="text-4xl sm:text-6xl font-black font-display text-white tracking-tight leading-tight max-w-4xl mx-auto">
-                Estructura de Control para Constructoras que no admite pérdidas
+                La plataforma integral para construir, vender y gestionar mejor
               </h1>
               <p className="text-slate-400 text-sm sm:text-base max-w-2xl mx-auto leading-relaxed font-medium">
-                Sincronice presupuestos de obra, flujos de caja bimonetarios con cambio MEP, registre certificaciones de avance auditadas con AI y gestione licitaciones y proveedores desde un solo panel robusto.
+                Centralice obras, presupuestos, tesorería, compras, ventas,
+                clientes y proveedores. Sume inteligencia artificial y un
+                Marketplace conectado para administrar todo el negocio desde
+                una sola plataforma.
               </p>
-              
+
               <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
-                <button 
+                <button
                   onClick={() => setShowDemoModal(true)}
                   className="w-full sm:w-auto px-7 py-3.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-sm font-extrabold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-amber-500/10 hover:-translate-y-0.5"
                 >
-                  Solicitar Demostración Gratis <ArrowRight className="w-4 h-4" />
+                  Solicitar Demostración Gratis{" "}
+                  <ArrowRight className="w-4 h-4" />
                 </button>
-                <button 
-                  onClick={() => { setView("register"); setRegisterType("tenant"); setRegStep(1); }}
+                <button
+                  onClick={() => {
+                    setView("register");
+                    setRegisterType("tenant");
+                    setRegStep(1);
+                  }}
                   className="w-full sm:w-auto px-7 py-3.5 bg-slate-900 hover:bg-slate-800 text-white border border-slate-800 text-sm font-bold rounded-xl transition-all cursor-pointer hover:-translate-y-0.5"
                 >
                   Crear Mi Cuenta Empresa
@@ -421,7 +543,8 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
 
               {/* Trust Badge */}
               <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest pt-8">
-                Diseñado para Desarrolladoras de Latam • Soporte Normativo CUIT/CUIL
+                Diseñado para Desarrolladoras de Latam • Soporte Normativo
+                CUIT/CUIL
               </p>
             </div>
 
@@ -431,83 +554,117 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
           </section>
 
           {/* KEY CAPABILITIES */}
-          <section id="features" className="py-16 px-6 border-t border-slate-900 bg-slate-950/40">
+          <section
+            id="features"
+            className="py-16 px-6 border-t border-slate-900 bg-slate-950/40"
+          >
             <div className="max-w-7xl mx-auto space-y-12">
               <div className="text-center max-w-xl mx-auto space-y-3">
-                <h2 className="text-2xl sm:text-3xl font-bold text-white font-display uppercase tracking-tight">Capacidades del Sistema</h2>
+                <h2 className="text-2xl sm:text-3xl font-bold text-white font-display uppercase tracking-tight">
+                  Capacidades del Sistema
+                </h2>
                 <p className="text-xs text-slate-400 font-semibold leading-relaxed">
-                  Lelfun está diseñado bajo las estrictas exigencias administrativas de obras de gran envergadura.
+                  Lelfun está diseñado bajo las estrictas exigencias
+                  administrativas de obras de gran envergadura.
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {/* Card 1 */}
-                <div className="bg-slate-900/60 border border-slate-800 p-6 rounded-2xl space-y-4 hover:border-slate-700 transition-all">
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2.5 hover:border-slate-700 transition-all">
                   <div className="w-10 h-10 bg-amber-500/10 text-amber-400 rounded-lg flex items-center justify-center">
                     <TrendingUp className="w-5 h-5" />
                   </div>
-                  <h3 className="text-base font-bold text-white">Presupuestos CAC Activos</h3>
+                  <h3 className="text-base font-bold text-white">
+                    Presupuestos CAC Activos
+                  </h3>
                   <p className="text-xs text-slate-400 leading-relaxed font-semibold">
-                    Controle las planillas de costos distribuidos e incidencias. Reajuste cuotas de fideicomisos con índices de inflación CAC de manera automática.
+                    Controle las planillas de costos distribuidos e incidencias.
+                    Reajuste cuotas de fideicomisos con índices de inflación CAC
+                    de manera automática.
                   </p>
                 </div>
 
                 {/* Card 2 */}
-                <div className="bg-slate-900/60 border border-slate-800 p-6 rounded-2xl space-y-4 hover:border-slate-700 transition-all">
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2.5 hover:border-slate-700 transition-all">
                   <div className="w-10 h-10 bg-amber-500/10 text-amber-400 rounded-lg flex items-center justify-center">
                     <DollarSign className="w-5 h-5" />
                   </div>
-                  <h3 className="text-base font-bold text-white">Tesorería y Caja MEP</h3>
+                  <h3 className="text-base font-bold text-white">
+                    Tesorería y Caja MEP
+                  </h3>
                   <p className="text-xs text-slate-400 leading-relaxed font-semibold">
-                    Opere con total tranquilidad en pesos (ARS), dólares (USD) y reales (BRL). Conciliación de diferencias con venta MEP integrada y flujos bimonetarios.
+                    Opere con total tranquilidad en pesos (ARS), dólares (USD) y
+                    reales (BRL). Conciliación de diferencias con venta MEP
+                    integrada y flujos bimonetarios.
                   </p>
                 </div>
 
                 {/* Card 3 */}
-                <div className="bg-slate-900/60 border border-slate-800 p-6 rounded-2xl space-y-4 hover:border-slate-700 transition-all">
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2.5 hover:border-slate-700 transition-all">
                   <div className="w-10 h-10 bg-amber-500/10 text-amber-400 rounded-lg flex items-center justify-center">
                     <Sparkles className="w-5 h-5" />
                   </div>
-                  <h3 className="text-base font-bold text-white">Planificación de Obras con AI</h3>
+                  <h3 className="text-base font-bold text-white">
+                    Planificación de Obras con AI
+                  </h3>
                   <p className="text-xs text-slate-400 leading-relaxed font-semibold">
-                    Acelere la creación de cronogramas. Nuestra IA analiza los metros cuadrados, tipo de edificación y genera automáticamente un diagrama de Gantt óptimo.
+                    Acelere la creación de cronogramas. Nuestra IA analiza los
+                    metros cuadrados, tipo de edificación y genera
+                    automáticamente un diagrama de Gantt óptimo.
                   </p>
                 </div>
 
                 {/* Card 4 */}
-                <div className="bg-slate-900/60 border border-slate-800 p-6 rounded-2xl space-y-4 hover:border-slate-700 transition-all">
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2.5 hover:border-slate-700 transition-all">
                   <div className="w-10 h-10 bg-amber-500/10 text-amber-400 rounded-lg flex items-center justify-center">
                     <BadgePercent className="w-5 h-5" />
                   </div>
-                  <h3 className="text-base font-bold text-white">Auditoría & Certificaciones</h3>
+                  <h3 className="text-base font-bold text-white">
+                    Auditoría & Certificaciones
+                  </h3>
                   <p className="text-xs text-slate-400 leading-relaxed font-semibold">
-                    Evite desvíos físicos-financieros. Registre certificaciones de obra auditadas con firmas de ingenieros, actualizando el avance en tiempo real.
+                    Evite desvíos físicos-financieros. Registre certificaciones
+                    de obra auditadas con firmas de ingenieros, actualizando el
+                    avance en tiempo real.
                   </p>
                 </div>
 
                 {/* Card 5 */}
-                <div className="bg-slate-900/60 border border-slate-800 p-6 rounded-2xl space-y-4 hover:border-slate-700 transition-all">
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2.5 hover:border-slate-700 transition-all">
                   <div className="w-10 h-10 bg-amber-500/10 text-amber-400 rounded-lg flex items-center justify-center">
                     <Compass className="w-5 h-5" />
                   </div>
-                  <h3 className="text-base font-bold text-white">Marketplace de Suministros</h3>
+                  <h3 className="text-base font-bold text-white">
+                    Marketplace de Suministros
+                  </h3>
                   <p className="text-xs text-slate-400 leading-relaxed font-semibold">
-                    Acceda a un catálogo transparente de proveedores verificados de Latam, lance licitaciones públicas y reciba cotizaciones consolidadas.
+                    Explore públicamente productos y servicios, regístrese como
+                    comprador o proveedor, compre directamente, lance
+                    licitaciones y compare cotizaciones por renglón.
                   </p>
                 </div>
 
                 {/* Card 6 */}
-                <div className="bg-slate-900/60 border border-slate-800 p-6 rounded-2xl space-y-4 hover:border-slate-700 transition-all">
+                <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl space-y-2.5 hover:border-slate-700 transition-all">
                   <div className="w-10 h-10 bg-amber-500/10 text-amber-400 rounded-lg flex items-center justify-center">
                     <FileText className="w-5 h-5" />
                   </div>
-                  <h3 className="text-base font-bold text-white">Procesamiento OCR de Facturas</h3>
+                  <h3 className="text-base font-bold text-white">
+                    Procesamiento OCR de Facturas
+                  </h3>
                   <p className="text-xs text-slate-400 leading-relaxed font-semibold">
-                    Suba los remitos y facturas en PDF y JPG para que la AI extraiga automáticamente montos, CUIT, ítems e impute directamente a las líneas presupuestarias de la obra.
+                    Suba los remitos y facturas en PDF y JPG para que la AI
+                    extraiga automáticamente montos, CUIT, ítems e impute
+                    directamente a las líneas presupuestarias de la obra.
                   </p>
                 </div>
-
+                <FeatureCard icon={<Building2 />} title="Control integral de obras" text="Gestione múltiples proyectos, estados, documentos, responsables, presupuestos independientes y cronogramas desde un único tablero." />
+                <FeatureCard icon={<Briefcase />} title="Compras, logística y proveedores" text="Administre notas de pedido, solicitudes, proveedores, clientes, entregas y su vínculo con obras y líneas presupuestarias." />
+                <FeatureCard icon={<TrendingUp />} title="CRM inmobiliario y ventas" text="Publique unidades, gestione oportunidades, reservas, descuentos, financiación, cuotas, cobranzas y comisiones." />
+                <FeatureCard icon={<DollarSign />} title="Arqueo y consolidación monetaria" text="Valide movimientos contra efectivo, bancos y cajas de seguridad con tipo de cambio histórico y moneda de consolidación." />
+                <FeatureCard icon={<ShieldAlert />} title="Consorcios, garantías y reclamos" text="Relacione reclamos con proyectos, unidades y clientes, adjunte documentación y controle su resolución." />
+                <FeatureCard icon={<Compass />} title="Licitaciones y compras directas" text="Cree RFI y RFP públicas, privadas o limitadas, compare ofertas por renglón, adjudique y califique." />
               </div>
             </div>
           </section>
@@ -516,33 +673,63 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
           <section id="pricing" className="py-20 px-6 bg-slate-950">
             <div className="max-w-7xl mx-auto space-y-14">
               <div className="text-center max-w-xl mx-auto space-y-3">
-                <h2 className="text-2xl sm:text-3xl font-bold text-white font-display uppercase tracking-tight">Suscripciones Disponibles</h2>
+                <h2 className="text-2xl sm:text-3xl font-bold text-white font-display uppercase tracking-tight">
+                  Suscripciones Disponibles
+                </h2>
                 <p className="text-xs text-slate-400 font-semibold leading-relaxed">
-                  Elija el plan que mejor se adapte al volumen de desarrollo de su constructora. Sin costos ocultos.
+                  Elija el plan que mejor se adapte al volumen de desarrollo de
+                  su constructora. Sin costos ocultos.
                 </p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                
                 {/* Plan 1 */}
                 <div className="bg-slate-900/40 border border-slate-800 p-8 rounded-3xl flex flex-col justify-between space-y-6 relative hover:border-slate-700 transition-all">
                   <div className="space-y-4">
-                    <span className="px-2.5 py-1 bg-slate-800 border border-slate-700 text-slate-300 text-[9px] font-bold uppercase tracking-wider rounded">Plan Inicial</span>
-                    <h3 className="text-xl font-bold text-white">Lelfun Starter</h3>
-                    <p className="text-xs text-slate-400">Excelente para pequeños constructores, refacciones y contratistas independientes.</p>
+                    <span className="px-2.5 py-1 bg-slate-800 border border-slate-700 text-slate-300 text-[9px] font-bold uppercase tracking-wider rounded">
+                      Plan Inicial
+                    </span>
+                    <h3 className="text-xl font-bold text-white">
+                      Lelfun Starter
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Excelente para pequeños constructores, refacciones y
+                      contratistas independientes.
+                    </p>
                     <div className="pt-2">
-                      <span className="text-3xl font-black text-white font-mono">u$s 150</span>
-                      <span className="text-slate-500 text-xs font-semibold"> / mes</span>
+                      <span className="text-3xl font-black text-white font-mono">
+                        u$s 150
+                      </span>
+                      <span className="text-slate-500 text-xs font-semibold">
+                        {" "}
+                        / mes
+                      </span>
                     </div>
                     <ul className="text-xs text-slate-300 space-y-2.5 pt-4 border-t border-slate-800/80">
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500 shrink-0" /> Hasta 3 Proyectos activos</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500 shrink-0" /> Flujo de caja bimonetario</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500 shrink-0" /> 1 Cuenta corriente bancaria</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500 shrink-0" /> Ingesta OCR básica</li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-emerald-500 shrink-0" />{" "}
+                        Hasta 3 Proyectos activos
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-emerald-500 shrink-0" />{" "}
+                        Flujo de caja bimonetario
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-emerald-500 shrink-0" />{" "}
+                        1 Cuenta corriente bancaria
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-emerald-500 shrink-0" />{" "}
+                        Ingesta OCR básica
+                      </li>
                     </ul>
                   </div>
-                  <button 
-                    onClick={() => { setView("register"); setRegisterType("tenant"); setRegStep(1); }}
+                  <button
+                    onClick={() => {
+                      setView("register");
+                      setRegisterType("tenant");
+                      setRegStep(1);
+                    }}
                     className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white border border-slate-800 text-xs font-bold rounded-xl cursor-pointer transition-all"
                   >
                     Comenzar Gratis
@@ -555,25 +742,54 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                     RECOMENDADO
                   </div>
                   <div className="space-y-4">
-                    <span className="px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[9px] font-bold uppercase tracking-wider rounded">Plan Corporativo</span>
+                    <span className="px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[9px] font-bold uppercase tracking-wider rounded">
+                      Plan Corporativo
+                    </span>
                     <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                      Lelfun Pro 
+                      Lelfun Pro
                     </h3>
-                    <p className="text-xs text-slate-300">Perfecto para constructoras medianas y desarrolladoras inmobiliarias en expansión.</p>
+                    <p className="text-xs text-slate-300">
+                      Perfecto para constructoras medianas y desarrolladoras
+                      inmobiliarias en expansión.
+                    </p>
                     <div className="pt-2">
-                      <span className="text-4xl font-black text-white font-mono">u$s 250</span>
-                      <span className="text-slate-500 text-xs font-semibold"> / mes</span>
+                      <span className="text-4xl font-black text-white font-mono">
+                        u$s 250
+                      </span>
+                      <span className="text-slate-500 text-xs font-semibold">
+                        {" "}
+                        / mes
+                      </span>
                     </div>
                     <ul className="text-xs text-slate-300 space-y-2.5 pt-4 border-t border-slate-800/80">
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-amber-400 shrink-0" /> <strong>Hasta 5 Proyectos activos</strong></li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-amber-400 shrink-0" /> Cronograma Gantt asistido por AI</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-amber-400 shrink-0" /> Multi-cuentas y control bimonetario</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-amber-400 shrink-0" /> Licitaciones y control de compras</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-amber-400 shrink-0" /> Ingesta OCR ilimitada</li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-amber-400 shrink-0" />{" "}
+                        <strong>Hasta 5 Proyectos activos</strong>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-amber-400 shrink-0" />{" "}
+                        Cronograma Gantt asistido por AI
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-amber-400 shrink-0" />{" "}
+                        Multi-cuentas y control bimonetario
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-amber-400 shrink-0" />{" "}
+                        Licitaciones y control de compras
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-amber-400 shrink-0" />{" "}
+                        Ingesta OCR ilimitada
+                      </li>
                     </ul>
                   </div>
-                  <button 
-                    onClick={() => { setView("register"); setRegisterType("tenant"); setRegStep(1); }}
+                  <button
+                    onClick={() => {
+                      setView("register");
+                      setRegisterType("tenant");
+                      setRegStep(1);
+                    }}
                     className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-extrabold rounded-xl cursor-pointer transition-all shadow-md"
                   >
                     Suscribirse Ahora
@@ -583,28 +799,51 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                 {/* Plan 3 */}
                 <div className="bg-slate-900/40 border border-slate-800 p-8 rounded-3xl flex flex-col justify-between space-y-6 relative hover:border-slate-700 transition-all">
                   <div className="space-y-4">
-                    <span className="px-2.5 py-1 bg-slate-800 border border-slate-700 text-slate-300 text-[9px] font-bold uppercase tracking-wider rounded">Plan Unlimited</span>
-                    <h3 className="text-xl font-bold text-white">Lelfun Enterprise</h3>
-                    <p className="text-xs text-slate-400">Solución a gran escala para holdings inmobiliarios, fideicomisarios y obras públicas.</p>
+                    <span className="px-2.5 py-1 bg-slate-800 border border-slate-700 text-slate-300 text-[9px] font-bold uppercase tracking-wider rounded">
+                      Plan Unlimited
+                    </span>
+                    <h3 className="text-xl font-bold text-white">
+                      Lelfun Enterprise
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Solución a gran escala para holdings inmobiliarios,
+                      fideicomisarios y obras públicas.
+                    </p>
                     <div className="pt-2">
-                      <span className="text-3xl font-black text-white font-mono">u$s 450</span>
-                      <span className="text-slate-500 text-xs font-semibold"> / mes</span>
+                      <span className="text-3xl font-black text-white font-mono">
+                        u$s 450
+                      </span>
+                      <span className="text-slate-500 text-xs font-semibold">
+                        {" "}
+                        / mes
+                      </span>
                     </div>
                     <ul className="text-xs text-slate-300 space-y-2.5 pt-4 border-t border-slate-800/80">
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500 shrink-0" /> <strong>Proyectos Activos Ilimitados</strong></li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500 shrink-0" /> Soporte dedicado prioritario</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500 shrink-0" /> API de integración con sistemas ERP</li>
-                      <li className="flex items-center gap-2"><Check className="w-4 h-4 text-emerald-500 shrink-0" /> Personalizaciones a medida</li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-emerald-500 shrink-0" />{" "}
+                        <strong>Proyectos Activos Ilimitados</strong>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-emerald-500 shrink-0" />{" "}
+                        Soporte dedicado prioritario
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-emerald-500 shrink-0" />{" "}
+                        API de integración con sistemas ERP
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-emerald-500 shrink-0" />{" "}
+                        Personalizaciones a medida
+                      </li>
                     </ul>
                   </div>
-                  <button 
+                  <button
                     onClick={() => setShowDemoModal(true)}
                     className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white border border-slate-800 text-xs font-bold rounded-xl cursor-pointer transition-all"
                   >
                     Solicitar demo corporativa
                   </button>
                 </div>
-
               </div>
             </div>
           </section>
@@ -613,9 +852,14 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
           <footer className="border-t border-slate-900 py-12 px-6 bg-slate-950/80 text-center space-y-4 text-xs text-slate-500 font-medium">
             <div className="flex items-center justify-center gap-2">
               <LelfunLogo className="w-7 h-7" />
-              <span className="text-white font-bold uppercase tracking-wider">Lelfun Software</span>
+              <span className="text-white font-bold uppercase tracking-wider">
+                Lelfun · by Acizer
+              </span>
             </div>
-            <p>© 2026 Lelfun Inc. Todos los derechos reservados. Plataforma auditada con cifrado SSL de grado bancario.</p>
+            <p>
+              © 2026 Acizer. Todos los derechos reservados. Lelfun es un
+              producto desarrollado por {" "}<a href="https://www.acizer.com.ar" target="_blank" rel="noreferrer" className="text-amber-400 hover:text-amber-300">Acizer</a>.
+            </p>
           </footer>
         </main>
       )}
@@ -626,8 +870,12 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
           <div className="bg-slate-900/60 border border-slate-800 p-8 rounded-3xl max-w-md w-full space-y-6 shadow-2xl relative">
             <div className="text-center space-y-2">
               <LelfunLogo className="w-12 h-12 mx-auto" />
-              <h2 className="text-xl font-bold font-display text-white">Ingresar a Lelfun</h2>
-              <p className="text-xs text-slate-400">Seleccione el portal de acceso correspondiente</p>
+              <h2 className="text-xl font-bold font-display text-white">
+                Ingresar a Lelfun
+              </h2>
+              <p className="text-xs text-slate-400">
+                Seleccione el portal de acceso correspondiente
+              </p>
             </div>
 
             {/* Portal type toggle */}
@@ -661,7 +909,6 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
             </div>
 
             <form onSubmit={handleLogin} className="space-y-4 text-xs">
-              
               {errorMsg && (
                 <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-rose-400 font-semibold flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 shrink-0" />
@@ -670,7 +917,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
               )}
 
               <div>
-                <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1 tracking-wide">Correo Electrónico</label>
+                <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1 tracking-wide">
+                  Correo Electrónico
+                </label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                   <input
@@ -685,7 +934,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
               </div>
 
               <div>
-                <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1 tracking-wide">Contraseña</label>
+                <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1 tracking-wide">
+                  Contraseña
+                </label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                   <input
@@ -702,22 +953,40 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
               {/* Real-time Password checklist for feedback */}
               {password.length > 0 && (
                 <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800 space-y-1.5 text-[10px] font-semibold text-slate-400">
-                  <span className="block text-[9px] uppercase tracking-wide text-slate-500 mb-1">Requisitos de contraseña:</span>
+                  <span className="block text-[9px] uppercase tracking-wide text-slate-500 mb-1">
+                    Requisitos de contraseña:
+                  </span>
                   <div className="grid grid-cols-2 gap-1">
                     <div className="flex items-center gap-1.5">
-                      <div className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold ${passLength ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-850 text-slate-500'}`}>✓</div>
+                      <div
+                        className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold ${passLength ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-850 text-slate-500"}`}
+                      >
+                        ✓
+                      </div>
                       <span>Min. 8 caracteres</span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <div className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold ${passUpper ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-850 text-slate-500'}`}>✓</div>
+                      <div
+                        className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold ${passUpper ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-850 text-slate-500"}`}
+                      >
+                        ✓
+                      </div>
                       <span>1 Mayúscula</span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <div className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold ${passSpecial ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-850 text-slate-500'}`}>✓</div>
+                      <div
+                        className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold ${passSpecial ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-850 text-slate-500"}`}
+                      >
+                        ✓
+                      </div>
                       <span>Caract. especial</span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <div className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold ${passAlphaNum ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-850 text-slate-500'}`}>✓</div>
+                      <div
+                        className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 text-[8px] font-bold ${passAlphaNum ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-850 text-slate-500"}`}
+                      >
+                        ✓
+                      </div>
                       <span>Alfanumérico</span>
                     </div>
                   </div>
@@ -735,7 +1004,10 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                     <span>Iniciando sesión...</span>
                   </>
                 ) : (
-                  <span>Ingresar al Portal {loginType === "tenant" ? "Empresa" : "Marketplace"}</span>
+                  <span>
+                    Ingresar al Portal{" "}
+                    {loginType === "tenant" ? "Empresa" : "Marketplace"}
+                  </span>
                 )}
               </button>
             </form>
@@ -744,7 +1016,10 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
               <p className="text-[11px] text-slate-500 font-medium">
                 ¿No tienes una cuenta aún?{" "}
                 <button
-                  onClick={() => { setView("register"); setRegStep(1); }}
+                  onClick={() => {
+                    setView("register");
+                    setRegStep(1);
+                  }}
                   className="text-amber-500 hover:underline cursor-pointer font-bold"
                 >
                   Regístrate aquí
@@ -761,13 +1036,17 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
           <div className="bg-slate-900/60 border border-slate-800 p-8 rounded-3xl max-w-xl w-full space-y-6 shadow-2xl">
             <div className="text-center space-y-2">
               <LelfunLogo className="w-12 h-12 mx-auto" />
-              <h2 className="text-xl font-bold font-display text-white">Crear Cuenta en Lelfun</h2>
-              <p className="text-xs text-slate-400">Complete el formulario de registro integrado</p>
+              <h2 className="text-xl font-bold font-display text-white">
+                Crear Cuenta en Lelfun
+              </h2>
+              <p className="text-xs text-slate-400">
+                Complete el formulario de registro integrado
+              </p>
             </div>
 
             {/* Registration type selector */}
             {regStep === 1 && (
-              <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800/60">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800/60">
                 <button
                   type="button"
                   onClick={() => setRegisterType("tenant")}
@@ -796,20 +1075,37 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                     <span>Proveedor del Marketplace</span>
                   </div>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setRegisterType("buyer")}
+                  className={`py-2 px-3 text-xs font-bold rounded-lg transition-all cursor-pointer ${registerType === "buyer" ? "bg-amber-500 text-slate-950 font-extrabold" : "text-slate-400 hover:text-white"}`}
+                >
+                  <div className="flex items-center justify-center gap-1.5">
+                    <ShoppingCart className="w-3.5 h-3.5" />
+                    <span>Comprador Marketplace</span>
+                  </div>
+                </button>
               </div>
             )}
 
             {/* Step progress bullets for tenant type */}
             {registerType === "tenant" && (
               <div className="flex items-center justify-center gap-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                <span className={`px-2 py-0.5 rounded ${regStep === 1 ? 'bg-amber-500 text-slate-950 font-black' : 'bg-slate-800 text-slate-300'}`}>1. Datos de Usuario</span>
+                <span
+                  className={`px-2 py-0.5 rounded ${regStep === 1 ? "bg-amber-500 text-slate-950 font-black" : "bg-slate-800 text-slate-300"}`}
+                >
+                  1. Datos de Usuario
+                </span>
                 <ChevronRight className="w-3 h-3 text-slate-700" />
-                <span className={`px-2 py-0.5 rounded ${regStep === 2 ? 'bg-amber-500 text-slate-950 font-black' : 'bg-slate-800 text-slate-500'}`}>2. Datos de Empresa</span>
+                <span
+                  className={`px-2 py-0.5 rounded ${regStep === 2 ? "bg-amber-500 text-slate-950 font-black" : "bg-slate-800 text-slate-500"}`}
+                >
+                  2. Datos de Empresa
+                </span>
               </div>
             )}
 
             <form onSubmit={handleRegister} className="space-y-4 text-xs">
-              
               {errorMsg && (
                 <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-rose-400 font-semibold flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 shrink-0" />
@@ -829,7 +1125,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Nombre</label>
+                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                        Nombre
+                      </label>
                       <input
                         type="text"
                         placeholder="Ej. Carlos"
@@ -840,7 +1138,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Apellido</label>
+                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                        Apellido
+                      </label>
                       <input
                         type="text"
                         placeholder="Ej. Rossi"
@@ -853,7 +1153,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                   </div>
 
                   <div>
-                    <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Correo Electrónico Corporativo</label>
+                    <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                      Correo Electrónico Corporativo
+                    </label>
                     <input
                       type="email"
                       placeholder="admin@empresa.com"
@@ -865,7 +1167,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                   </div>
 
                   <div>
-                    <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Teléfono Móvil (Código País + Área + Número)</label>
+                    <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                      Teléfono Móvil (Código País + Área + Número)
+                    </label>
                     <input
                       type="text"
                       placeholder="Ej. +54 9 11 4802-9988"
@@ -877,10 +1181,45 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                   </div>
 
                   {/* Marketplace Specific Fields (Single Step) */}
+                  {registerType === "buyer" && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                          Empresa compradora
+                        </label>
+                        <input
+                          value={suppEmpresa}
+                          onChange={(e) => setSuppEmpresa(e.target.value)}
+                          placeholder="Ej. Constructora del Sur"
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white outline-none focus:border-amber-500 font-semibold"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                          CUIT de la empresa
+                        </label>
+                        <input
+                          value={suppCuit}
+                          onChange={(e) => setSuppCuit(e.target.value)}
+                          placeholder="Ej. 30-71458921-9"
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white outline-none focus:border-amber-500 font-semibold"
+                          required
+                        />
+                      </div>
+                      <p className="sm:col-span-2 text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3">
+                        Cuenta gratuita para comprar productos, solicitar
+                        cotizaciones y crear licitaciones. No incluye los
+                        módulos ERP.
+                      </p>
+                    </div>
+                  )}
                   {registerType === "marketplace" && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800/60">
                       <div>
-                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Nombre de la Empresa Proveedora</label>
+                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                          Nombre de la Empresa Proveedora
+                        </label>
                         <input
                           type="text"
                           placeholder="Ej. Aceros Siderar"
@@ -891,7 +1230,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">CUIT / CUIL de la Empresa</label>
+                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                          CUIT / CUIL de la Empresa
+                        </label>
                         <input
                           type="text"
                           placeholder="Ej. 30-71458921-9"
@@ -901,12 +1242,75 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                           required
                         />
                       </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                          Tipo de empresa
+                        </label>
+                        <input
+                          value={suppCompanyType}
+                          onChange={(e) => setSuppCompanyType(e.target.value)}
+                          placeholder="Fabricante, distribuidor…"
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white outline-none focus:border-amber-500"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                          Sitio web / red principal
+                        </label>
+                        <input
+                          value={suppWebsite}
+                          onChange={(e) => setSuppWebsite(e.target.value)}
+                          placeholder="https://empresa.com.ar"
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white outline-none focus:border-amber-500"
+                        />
+                      </div>
+                      <select
+                        value={suppYearsRange}
+                        onChange={(e) => setSuppYearsRange(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white"
+                      >
+                        <option>0-2</option>
+                        <option>3-5</option>
+                        <option>6-10</option>
+                        <option>11-20</option>
+                        <option>Más de 20</option>
+                      </select>
+                      <select
+                        value={suppEmployeesRange}
+                        onChange={(e) => setSuppEmployeesRange(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white"
+                      >
+                        <option>1-10</option>
+                        <option>11-50</option>
+                        <option>51-200</option>
+                        <option>Más de 200</option>
+                      </select>
+                      <select
+                        value={suppRevenueRange}
+                        onChange={(e) => setSuppRevenueRange(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white"
+                      >
+                        <option>Hasta ARS 100M</option>
+                        <option>ARS 100M-500M</option>
+                        <option>ARS 500M-2.000M</option>
+                        <option>Más de ARS 2.000M</option>
+                      </select>
+                      <textarea
+                        value={suppDescription}
+                        onChange={(e) => setSuppDescription(e.target.value)}
+                        placeholder="Experiencia, especialidad y capacidad operativa"
+                        className="bg-slate-950 border border-slate-800 rounded-xl py-2.5 px-3.5 text-xs text-white h-20 sm:col-span-2"
+                        required
+                      />
                     </div>
                   )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Contraseña de Acceso</label>
+                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                        Contraseña de Acceso
+                      </label>
                       <input
                         type="password"
                         placeholder="••••••••"
@@ -917,7 +1321,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Repetir Contraseña</label>
+                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                        Repetir Contraseña
+                      </label>
                       <input
                         type="password"
                         placeholder="••••••••"
@@ -932,26 +1338,36 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                   {/* Password rules checker */}
                   {regPassword.length > 0 && (
                     <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800 space-y-1.5 text-[10px] font-semibold text-slate-400">
-                      <span className="block text-[9px] uppercase tracking-wide text-slate-500 mb-0.5">La contraseña DEBE cumplir con:</span>
+                      <span className="block text-[9px] uppercase tracking-wide text-slate-500 mb-0.5">
+                        La contraseña DEBE cumplir con:
+                      </span>
                       <div className="grid grid-cols-2 gap-2">
                         <div className="flex items-center gap-1.5">
-                          <span className={`text-[11px] ${passLength ? 'text-emerald-400' : 'text-slate-600'}`}>
-                            {passLength ? '●' : '○'} Mínimo 8 caracteres
+                          <span
+                            className={`text-[11px] ${passLength ? "text-emerald-400" : "text-slate-600"}`}
+                          >
+                            {passLength ? "●" : "○"} Mínimo 8 caracteres
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <span className={`text-[11px] ${passUpper ? 'text-emerald-400' : 'text-slate-600'}`}>
-                            {passUpper ? '●' : '○'} Al menos una Mayúscula
+                          <span
+                            className={`text-[11px] ${passUpper ? "text-emerald-400" : "text-slate-600"}`}
+                          >
+                            {passUpper ? "●" : "○"} Al menos una Mayúscula
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <span className={`text-[11px] ${passSpecial ? 'text-emerald-400' : 'text-slate-600'}`}>
-                            {passSpecial ? '●' : '○'} Carácter especial
+                          <span
+                            className={`text-[11px] ${passSpecial ? "text-emerald-400" : "text-slate-600"}`}
+                          >
+                            {passSpecial ? "●" : "○"} Carácter especial
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <span className={`text-[11px] ${passAlphaNum ? 'text-emerald-400' : 'text-slate-600'}`}>
-                            {passAlphaNum ? '●' : '○'} Números y letras
+                          <span
+                            className={`text-[11px] ${passAlphaNum ? "text-emerald-400" : "text-slate-600"}`}
+                          >
+                            {passAlphaNum ? "●" : "○"} Números y letras
                           </span>
                         </div>
                       </div>
@@ -965,7 +1381,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                 <div className="space-y-4 animate-fade-in">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Nombre Fantasía</label>
+                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                        Nombre Fantasía
+                      </label>
                       <input
                         type="text"
                         placeholder="Ej. Lelfun Desarrollos"
@@ -976,7 +1394,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Razón Social</label>
+                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                        Razón Social
+                      </label>
                       <input
                         type="text"
                         placeholder="Ej. Lelfun Desarrollos S.A."
@@ -990,7 +1410,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">CUIT de la Empresa</label>
+                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                        CUIT de la Empresa
+                      </label>
                       <input
                         type="text"
                         placeholder="Ej. 30-71409581-2"
@@ -1001,7 +1423,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Logo Empresa (URL Opcional)</label>
+                      <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                        Logo Empresa (URL Opcional)
+                      </label>
                       <input
                         type="url"
                         placeholder="https://example.com/logo.png"
@@ -1013,11 +1437,15 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                   </div>
 
                   <div className="border border-slate-800/60 p-4 rounded-2xl bg-slate-950 space-y-3">
-                    <span className="block text-[10px] uppercase font-bold text-slate-400 tracking-wide">Dirección Legal de la Obra</span>
-                    
+                    <span className="block text-[10px] uppercase font-bold text-slate-400 tracking-wide">
+                      Dirección Legal de la Obra
+                    </span>
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[9px] text-slate-500 uppercase font-bold mb-1">País</label>
+                        <label className="block text-[9px] text-slate-500 uppercase font-bold mb-1">
+                          País
+                        </label>
                         <input
                           type="text"
                           value={tenPais}
@@ -1027,7 +1455,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                         />
                       </div>
                       <div>
-                        <label className="block text-[9px] text-slate-500 uppercase font-bold mb-1">Provincia / Estado</label>
+                        <label className="block text-[9px] text-slate-500 uppercase font-bold mb-1">
+                          Provincia / Estado
+                        </label>
                         <input
                           type="text"
                           placeholder="Ej. Buenos Aires"
@@ -1041,7 +1471,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[9px] text-slate-500 uppercase font-bold mb-1">Ciudad</label>
+                        <label className="block text-[9px] text-slate-500 uppercase font-bold mb-1">
+                          Ciudad
+                        </label>
                         <input
                           type="text"
                           placeholder="Ej. Recoleta, CABA"
@@ -1052,7 +1484,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                         />
                       </div>
                       <div>
-                        <label className="block text-[9px] text-slate-500 uppercase font-bold mb-1">Calle y Altura (Dirección Física)</label>
+                        <label className="block text-[9px] text-slate-500 uppercase font-bold mb-1">
+                          Calle y Altura (Dirección Física)
+                        </label>
                         <input
                           type="text"
                           placeholder="Ej. Av. Alvear 1850"
@@ -1069,17 +1503,24 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                         type="checkbox"
                         id="misma_fact"
                         checked={tenMismaFacturacion}
-                        onChange={(e) => setTenMismaFacturacion(e.target.checked)}
+                        onChange={(e) =>
+                          setTenMismaFacturacion(e.target.checked)
+                        }
                         className="rounded border-slate-800 bg-slate-900 accent-amber-500 w-4 h-4 cursor-pointer"
                       />
-                      <label htmlFor="misma_fact" className="text-[10px] text-slate-400 font-semibold cursor-pointer">
+                      <label
+                        htmlFor="misma_fact"
+                        className="text-[10px] text-slate-400 font-semibold cursor-pointer"
+                      >
                         Misma dirección de facturación
                       </label>
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Descripción de la Empresa / Alcance de Obras</label>
+                    <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">
+                      Descripción de la Empresa / Alcance de Obras
+                    </label>
                     <textarea
                       placeholder="Breve descripción del alcance constructivo (ej. Desarrollos residenciales Premium)..."
                       value={tenDesc}
@@ -1101,12 +1542,14 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                     Volver
                   </button>
                 )}
-                
+
                 <button
                   type="submit"
                   disabled={loading}
                   className={`py-3 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer text-xs uppercase tracking-wide ${
-                    registerType === "tenant" && regStep === 1 ? "w-full" : "flex-1"
+                    registerType === "tenant" && regStep === 1
+                      ? "w-full"
+                      : "flex-1"
                   }`}
                 >
                   {loading ? (
@@ -1116,19 +1559,22 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                     </>
                   ) : (
                     <span>
-                      {registerType === "tenant" && regStep === 1 ? "Siguiente Paso" : "Completar Registro & Onboarding"}
+                      {registerType === "tenant" && regStep === 1
+                        ? "Siguiente Paso"
+                        : "Completar Registro & Onboarding"}
                     </span>
                   )}
                 </button>
               </div>
-
             </form>
 
             <div className="text-center pt-2">
               <p className="text-[11px] text-slate-500 font-medium">
                 ¿Ya tienes una cuenta registrada?{" "}
                 <button
-                  onClick={() => { setView("login"); }}
+                  onClick={() => {
+                    setView("login");
+                  }}
                   className="text-amber-500 hover:underline cursor-pointer font-bold"
                 >
                   Inicia sesión aquí
@@ -1145,9 +1591,13 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
           <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full shadow-2xl overflow-hidden text-slate-100 p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base font-display flex items-center gap-1.5 text-white">
-                <Sparkles className="w-4.5 h-4.5 text-amber-500" /> Solicitar Demo Personalizada
+                <Sparkles className="w-4.5 h-4.5 text-amber-500" /> Solicitar
+                Demo Personalizada
               </h3>
-              <button onClick={() => setShowDemoModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
+              <button
+                onClick={() => setShowDemoModal(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -1157,19 +1607,29 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                 <div className="w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mx-auto text-xl">
                   ✓
                 </div>
-                <h4 className="font-bold text-white text-sm uppercase tracking-wide">¡Solicitud Procesada con Éxito!</h4>
+                <h4 className="font-bold text-white text-sm uppercase tracking-wide">
+                  ¡Solicitud Procesada con Éxito!
+                </h4>
                 <p className="text-xs text-slate-400 leading-relaxed px-4">
-                  Un Ingeniero de Implementación Comercial de Lelfun Software se pondrá en contacto dentro de las próximas 2 horas hábiles.
+                  Un Ingeniero de Implementación Comercial de Lelfun Software se
+                  pondrá en contacto dentro de las próximas 2 horas hábiles.
                 </p>
               </div>
             ) : (
-              <form onSubmit={handleDemoRequest} className="space-y-3.5 text-xs">
+              <form
+                onSubmit={handleDemoRequest}
+                className="space-y-3.5 text-xs"
+              >
                 <p className="text-xs text-slate-400 leading-normal">
-                  Descubra cómo automatizar las auditorías y el control financiero de sus obras con Lelfun. Complete sus datos para coordinar una videollamada.
+                  Descubra cómo automatizar las auditorías y el control
+                  financiero de sus obras con Lelfun. Complete sus datos para
+                  coordinar una videollamada.
                 </p>
 
                 <div>
-                  <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">Nombre Completo</label>
+                  <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">
+                    Nombre Completo
+                  </label>
                   <input
                     type="text"
                     placeholder="Ej. Ing. Mariano Rossi"
@@ -1182,7 +1642,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">Email Corporativo</label>
+                    <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">
+                      Email Corporativo
+                    </label>
                     <input
                       type="email"
                       placeholder="mariano@empresa.com"
@@ -1193,7 +1655,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                     />
                   </div>
                   <div>
-                    <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">Teléfono</label>
+                    <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">
+                      Teléfono
+                    </label>
                     <input
                       type="text"
                       placeholder="+54 11 4802-9988"
@@ -1207,7 +1671,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">Empresa Desarrolladora</label>
+                    <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">
+                      Empresa Desarrolladora
+                    </label>
                     <input
                       type="text"
                       placeholder="Ej. Norte Desarrollos"
@@ -1218,7 +1684,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                     />
                   </div>
                   <div>
-                    <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">Volumen de Obra Activa</label>
+                    <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">
+                      Volumen de Obra Activa
+                    </label>
                     <select
                       value={demoSize}
                       onChange={(e) => setDemoSize(e.target.value)}
@@ -1232,7 +1700,9 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
                 </div>
 
                 <div>
-                  <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">Notas / Consultas Especiales (Opcional)</label>
+                  <label className="block text-[9px] text-slate-400 uppercase font-bold mb-1">
+                    Notas / Consultas Especiales (Opcional)
+                  </label>
                   <textarea
                     placeholder="Cuéntenos brevemente qué tipo de obras administra y qué desafíos financieros busca resolver..."
                     value={demoMessage}
@@ -1252,7 +1722,6 @@ export default function LandingAndAuth({ onLoginSuccess, initialView = "landing"
           </div>
         </div>
       )}
-
     </div>
   );
 }
