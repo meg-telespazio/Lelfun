@@ -63,8 +63,10 @@ app.use("/api", async (req, res, next) => {
     route === "/request-demo" ||
     (req.method === "POST" && route === "/tenants") ||
     (req.method === "POST" && route === "/marketplace-suppliers") ||
+    (req.method === "POST" && route === "/marketplace/public/register-buyer") ||
     (req.method === "GET" && /^\/tenants\/[^/]+\/logo$/.test(route)) ||
-    (req.method === "GET" && route.startsWith("/marketplace/v2/media/"));
+    (req.method === "GET" && route.startsWith("/marketplace/v2/media")) ||
+    (req.method === "GET" && route.startsWith("/marketplace/public/"));
   if (publicRequest) return next();
   if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado en el servidor." });
 
@@ -87,6 +89,9 @@ app.use("/api", async (req, res, next) => {
   }
   if (!tenant) return res.status(403).json({ error: "El usuario no tiene un entorno habilitado." });
   if (route.startsWith("/superadmin/")) return res.status(403).json({ error: "Acceso exclusivo de superadmin." });
+  const { data: tenantLicense } = await supabaseAdmin.from("tenant_licenses").select("subscription_plans(code)").eq("tenant_id", tenant.tenant_id).maybeSingle();
+  const licensePlan: any = Array.isArray(tenantLicense?.subscription_plans) ? tenantLicense?.subscription_plans[0] : tenantLicense?.subscription_plans;
+  if (licensePlan?.code === "MARKETPLACE_BUYER" && !route.startsWith("/marketplace/")) return res.status(403).json({ error: "La cuenta Comprador Marketplace no incluye módulos ERP." });
 
   // Downstream handlers can use the server-derived tenant instead of trusting
   // tenant identifiers received from the browser.
@@ -1277,7 +1282,7 @@ async function writeAdminAudit(userId: string, action: string, entityType: strin
 
 app.get("/api/superadmin/dashboard", async (req: Request, res: Response) => {
   const admin = await requirePlatformAdmin(req, res); if (!admin || !supabaseAdmin) return;
-  const [tenantsResult, suppliersResult, productsResult, licensesResult, plansResult, billingResult, expensesResult, feesResult, alertsResult, auditResult, usageResult] = await Promise.all([
+  const [tenantsResult, suppliersResult, productsResult, licensesResult, plansResult, billingResult, expensesResult, feesResult, alertsResult, auditResult, usageResult, featuredResult, bannersResult, marketplaceSettingsResult, categoriesResult] = await Promise.all([
     supabaseAdmin.from("tenants").select("id,name,legal_name,tax_id,phone,company_type,created_at"),
     supabaseAdmin.from("supplier_organizations").select("id,legal_name,trade_name,tax_id,phone,contact_email,approval_status,created_at"),
     supabaseAdmin.from("marketplace_products").select("id,name,status,supplier_id,created_at,expires_at,supplier_organizations(legal_name,trade_name)"),
@@ -1288,9 +1293,13 @@ app.get("/api/superadmin/dashboard", async (req: Request, res: Response) => {
     supabaseAdmin.from("marketplace_service_fees").select("*,tenants(name),supplier_organizations(legal_name,trade_name)").order("calculated_at", { ascending: false }).limit(500),
     supabaseAdmin.from("platform_alerts").select("*,tenants(name)").is("resolved_at", null).order("created_at", { ascending: false }),
     supabaseAdmin.from("platform_audit_log").select("*").order("created_at", { ascending: false }).limit(100),
-    supabaseAdmin.from("tenant_usage_snapshots").select("*").order("measured_at", { ascending: false })
+    supabaseAdmin.from("tenant_usage_snapshots").select("*").order("measured_at", { ascending: false }),
+    supabaseAdmin.from("marketplace_featured_memberships").select("*,supplier_organizations(legal_name,trade_name,store_slug)").order("created_at", { ascending: false }),
+    supabaseAdmin.from("marketplace_banners").select("*").order("sort_order"),
+    supabaseAdmin.from("platform_settings").select("setting_key,value").in("setting_key", ["featured_membership_monthly_price","featured_membership_annual_monthly_price","featured_membership_max_products","featured_membership_vat_rate"]),
+    supabaseAdmin.from("marketplace_categories").select("id,name,code").eq("active",true).order("sort_order")
   ]);
-  const error = [tenantsResult, suppliersResult, productsResult, licensesResult, plansResult, billingResult, expensesResult, feesResult, alertsResult, auditResult, usageResult].find(result => result.error)?.error;
+  const error = [tenantsResult, suppliersResult, productsResult, licensesResult, plansResult, billingResult, expensesResult, feesResult, alertsResult, auditResult, usageResult, featuredResult, bannersResult, marketplaceSettingsResult, categoriesResult].find(result => result.error)?.error;
   if (error) return res.status(500).json({ error: error.message });
 
   const { data: memberships } = await supabaseAdmin.from("tenant_members").select("tenant_id,user_id,role,active");
@@ -1302,7 +1311,8 @@ app.get("/api/superadmin/dashboard", async (req: Request, res: Response) => {
   const income = (billingResult.data || []).filter(entry => entry.status !== "VOID").reduce((sum, entry) => sum + (entry.entry_type === "PAYMENT" || entry.entry_type === "CREDIT" ? -Number(entry.total_amount) : Number(entry.total_amount)), 0);
   const expenses = (expensesResult.data || []).reduce((sum, expense) => sum + Number(expense.total_amount), 0);
   const latestUsage = Array.from(new Map((usageResult.data || []).map(item => [item.tenant_id, item])).values());
-  res.json({ tenants: tenantsResult.data || [], suppliers: suppliersResult.data || [], products: productsResult.data || [], licenses: licensesResult.data || [], plans: plansResult.data || [], billingEntries: billingResult.data || [], expenses: expensesResult.data || [], serviceFees: feesResult.data || [], alerts: alertsResult.data || [], audit: auditResult.data || [], usage: latestUsage, users, memberships: memberships || [], metrics: { tenantCount: tenantsResult.data?.length || 0, supplierCount: suppliersResult.data?.length || 0, activeLicenses: (licensesResult.data || []).filter(item => item.status === "ACTIVE").length, pendingReceivables: (billingResult.data || []).filter(item => ["PENDING", "OVERDUE"].includes(item.status)).reduce((sum, item) => sum + Number(item.total_amount), 0), income, expenses, margin: income - expenses } });
+  const { data: marketplaceComplaints } = await supabaseAdmin.from("marketplace_complaints").select("*").order("created_at", { ascending: false }).limit(200);
+  res.json({ tenants: tenantsResult.data || [], suppliers: suppliersResult.data || [], products: productsResult.data || [], categories: categoriesResult.data || [], licenses: licensesResult.data || [], plans: plansResult.data || [], billingEntries: billingResult.data || [], expenses: expensesResult.data || [], serviceFees: feesResult.data || [], marketplaceComplaints: marketplaceComplaints || [], featuredMemberships: featuredResult.data || [], banners: bannersResult.data || [], marketplaceSettings: marketplaceSettingsResult.data || [], alerts: alertsResult.data || [], audit: auditResult.data || [], usage: latestUsage, users, memberships: memberships || [], metrics: { tenantCount: tenantsResult.data?.length || 0, supplierCount: suppliersResult.data?.length || 0, activeLicenses: (licensesResult.data || []).filter(item => item.status === "ACTIVE").length, pendingReceivables: (billingResult.data || []).filter(item => ["PENDING", "OVERDUE"].includes(item.status)).reduce((sum, item) => sum + Number(item.total_amount), 0), income, expenses, margin: income - expenses } });
 });
 
 app.put("/api/superadmin/tenants/:id/license", async (req: Request, res: Response) => {
@@ -1370,6 +1380,48 @@ app.put("/api/superadmin/suppliers/:id/status", async (req: Request, res: Respon
   if (error) return res.status(400).json({ error: error.message });
   await writeAdminAudit(admin.id, `${status}_SUPPLIER`, "supplier_organization", req.params.id, before, data);
   res.json(data);
+});
+
+app.post("/api/superadmin/marketplace/memberships", async (req: Request, res: Response) => {
+  const admin = await requirePlatformAdmin(req, res); if (!admin || !supabaseAdmin) return;
+  const cycle = req.body.billingCycle === "ANNUAL" ? "ANNUAL" : "MONTHLY";
+  const settingKeys = cycle === "ANNUAL" ? ["featured_membership_annual_monthly_price","featured_membership_vat_rate"] : ["featured_membership_monthly_price","featured_membership_vat_rate"];
+  const { data: settings } = await supabaseAdmin.from("platform_settings").select("setting_key,value").in("setting_key", settingKeys);
+  const setting = (key: string, fallback: number) => Number((settings || []).find(item => item.setting_key === key)?.value ?? fallback);
+  const price = cycle === "ANNUAL" ? setting("featured_membership_annual_monthly_price",5) : setting("featured_membership_monthly_price",10);
+  const ends = new Date(); ends.setMonth(ends.getMonth() + (cycle === "ANNUAL" ? 12 : 1));
+  const { data, error } = await supabaseAdmin.from("marketplace_featured_memberships").insert({ supplier_id: req.body.supplierId, billing_cycle: cycle, monthly_price: price, currency: "USD", vat_rate: setting("featured_membership_vat_rate",21), current_period_end: ends.toISOString().slice(0,10), status: "ACTIVE", auto_renew: true }).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  const { data: supplier } = await supabaseAdmin.from("supplier_organizations").select("trade_name,legal_name,store_slug").eq("id", req.body.supplierId).single();
+  if (!supplier?.store_slug) { const source = supplier?.trade_name || supplier?.legal_name || req.body.supplierId; const slug = source.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"-").replace(/(^-|-$)/g,"") + "-" + String(req.body.supplierId).slice(0,6); await supabaseAdmin.from("supplier_organizations").update({ store_slug: slug }).eq("id", req.body.supplierId); }
+  await writeAdminAudit(admin.id,"CREATE_FEATURED_MEMBERSHIP","marketplace_membership",data.id,null,data); res.status(201).json(data);
+});
+
+app.put("/api/superadmin/marketplace/settings", async (req: Request, res: Response) => {
+  const admin = await requirePlatformAdmin(req, res); if (!admin || !supabaseAdmin) return;
+  const allowed = ["featured_membership_monthly_price","featured_membership_annual_monthly_price","featured_membership_max_products","featured_membership_vat_rate"];
+  const rows = Object.entries(req.body).filter(([key])=>allowed.includes(key)).map(([setting_key,value])=>({setting_key,value,description:"Configuración Marketplace"}));
+  const { data,error } = await supabaseAdmin.from("platform_settings").upsert(rows,{onConflict:"setting_key"}).select(); if(error) return res.status(400).json({error:error.message}); await writeAdminAudit(admin.id,"UPDATE_MARKETPLACE_SETTINGS","platform_settings",undefined,null,rows); res.json(data);
+});
+
+app.post("/api/superadmin/marketplace/banners", async (req: Request, res: Response) => {
+  const admin = await requirePlatformAdmin(req, res); if (!admin || !supabaseAdmin) return;
+  const { data,error } = await supabaseAdmin.from("marketplace_banners").insert({ title:req.body.title,subtitle:req.body.subtitle||null,background_color:req.body.backgroundColor||"#0f172a",target_type:req.body.targetType,target_id:req.body.targetId,active:true,sort_order:Number(req.body.sortOrder||0),created_by:admin.id }).select().single(); if(error) return res.status(400).json({error:error.message}); await writeAdminAudit(admin.id,"CREATE_MARKETPLACE_BANNER","marketplace_banner",data.id,null,data); res.status(201).json(data);
+});
+
+app.put("/api/superadmin/marketplace/banners/:id", async (req: Request, res: Response) => {
+  const admin = await requirePlatformAdmin(req, res); if (!admin || !supabaseAdmin) return;
+  const { data,error } = await supabaseAdmin.from("marketplace_banners").update({active:Boolean(req.body.active)}).eq("id",req.params.id).select().single(); if(error) return res.status(400).json({error:error.message}); await writeAdminAudit(admin.id,"UPDATE_MARKETPLACE_BANNER","marketplace_banner",data.id,null,data); res.json(data);
+});
+
+app.put("/api/superadmin/marketplace/complaints/:id", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const admin = await requirePlatformAdmin(req, res); if (!admin) return;
+  const status = String(req.body.status || ""); if (!["OPEN","UNDER_REVIEW","RESOLVED","REJECTED"].includes(status)) return res.status(400).json({ error: "Estado inválido" });
+  const updates: any = { status, admin_notes: req.body.adminNotes || null, resolution: req.body.resolution || null, updated_at: new Date().toISOString() };
+  if (["RESOLVED","REJECTED"].includes(status)) { updates.resolved_by = admin.id; updates.resolved_at = new Date().toISOString(); }
+  const { data, error } = await supabaseAdmin.from("marketplace_complaints").update(updates).eq("id", req.params.id).select().single(); if (error) return res.status(400).json({ error: error.message });
+  await writeAdminAudit(admin.id, "RESOLVE_MARKETPLACE_COMPLAINT", "marketplace_complaint", data.id, null, data); res.json(data);
 });
 
 async function findAuthUserByEmail(email: string) {
@@ -1440,6 +1492,196 @@ async function calculateMarketplaceFee(operationType: "DIRECT_PURCHASE" | "TENDE
   return { percentage, feeAmount: Number((amount * percentage / 100).toFixed(2)) };
 }
 
+app.post("/api/marketplace/public/register-buyer", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Debe confirmar su cuenta para continuar" });
+  const [{ data: existingTenant }, { data: existingSupplier }] = await Promise.all([
+    supabaseAdmin.from("tenant_members").select("tenant_id").eq("user_id", user.id).eq("active", true).maybeSingle(),
+    supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", user.id).eq("active", true).maybeSingle()
+  ]);
+  if (existingTenant || existingSupplier) return res.status(409).json({ error: "El usuario ya pertenece a una organización" });
+  const companyName = String(req.body.companyName || "").trim(); const taxId = String(req.body.taxId || "").trim(); if (companyName.length < 2 || taxId.length < 7) return res.status(400).json({ error: "Complete empresa y CUIT" });
+  const { data: plan } = await supabaseAdmin.from("subscription_plans").select("id").eq("code", "MARKETPLACE_BUYER").eq("active", true).single(); if (!plan) return res.status(503).json({ error: "El plan Comprador Marketplace no está disponible" });
+  const { data: tenant, error: tenantError } = await supabaseAdmin.from("tenants").insert({ name: companyName, legal_name: req.body.legalName || companyName, tax_id: taxId, default_currency: req.body.currency || "ARS", phone: req.body.phone || null, legal_address: req.body.address || null, commercial_address: req.body.address || null, company_type: "MARKETPLACE_BUYER", created_by: user.id }).select().single(); if (tenantError) return res.status(400).json({ error: tenantError.message });
+  const { error: memberError } = await supabaseAdmin.from("tenant_members").insert({ tenant_id: tenant.id, user_id: user.id, role: "owner", active: true }); if (memberError) { await supabaseAdmin.from("tenants").delete().eq("id", tenant.id); return res.status(400).json({ error: memberError.message }); }
+  const dueDate = new Date(); dueDate.setFullYear(dueDate.getFullYear() + 10);
+  const { error: licenseError } = await supabaseAdmin.from("tenant_licenses").insert({ tenant_id: tenant.id, plan_id: plan.id, status: "ACTIVE", starts_at: new Date().toISOString().slice(0,10), next_due_date: dueDate.toISOString().slice(0,10) }); if (licenseError) { await supabaseAdmin.from("tenants").delete().eq("id", tenant.id); return res.status(400).json({ error: licenseError.message }); }
+  res.status(201).json({ tenantId: tenant.id, environment: "MARKETPLACE_BUYER" });
+});
+
+app.get("/api/marketplace/public/catalog", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req);
+  const page = Math.max(1, Number(req.query.page || 1));
+  const pageSize = Math.min(48, Math.max(6, Number(req.query.pageSize || 12)));
+  const search = String(req.query.search || "").trim().replace(/[,%()]/g, " ");
+  const category = String(req.query.category || "");
+  const currency = String(req.query.currency || "");
+  const publicationType = String(req.query.type || "");
+  const sort = String(req.query.sort || "featured");
+  let query = supabaseAdmin.from("marketplace_products").select("id,name,description,brand,model,sale_unit,currency,base_price,price_on_request,vat_included,stock_quantity,minimum_quantity,delivery_lead_days,location,financing_available,delivery_methods,status,view_count,sold_count,publication_type,service_available,service_people_capacity,service_hours_per_day,published_at,expires_at,category_id,marketplace_categories(id,name,code),supplier_organizations!inner(id,legal_name,trade_name,city,province,rating,review_count,identity_verified,completed_operations,average_response_minutes,approval_status,store_slug),marketplace_product_media(id,storage_path,sort_order)", { count: "exact" })
+    .eq("status", "ACTIVE").eq("supplier_organizations.approval_status", "APPROVED").gt("expires_at", new Date().toISOString());
+  if (search) query = query.or(`name.ilike.%${search}%,description.ilike.%${search}%,brand.ilike.%${search}%`);
+  if (category) query = query.eq("category_id", category);
+  if (["ARS", "USD"].includes(currency)) query = query.eq("currency", currency);
+  if (["PRODUCT", "SERVICE"].includes(publicationType)) query = query.eq("publication_type", publicationType);
+  if (sort === "price_asc") query = query.order("base_price", { ascending: true, nullsFirst: false });
+  else if (sort === "price_desc") query = query.order("base_price", { ascending: false, nullsFirst: false });
+  else if (sort === "best_selling") query = query.order("sold_count", { ascending: false });
+  else if (sort === "newest") query = query.order("published_at", { ascending: false });
+  else query = query.order("sold_count", { ascending: false }).order("published_at", { ascending: false });
+  const { data, error, count } = await query.range((page - 1) * pageSize, page * pageSize - 1);
+  if (error) return res.status(400).json({ error: error.message });
+  const products = (data || []).map((product: any) => {
+    const media = (product.marketplace_product_media || []).sort((a: any, b: any) => a.sort_order - b.sort_order);
+    return { ...product, base_price: user ? product.base_price : null, price_locked: !user, image_url: media[0]?.storage_path ? `/api/marketplace/v2/media?path=${encodeURIComponent(media[0].storage_path)}` : null, marketplace_product_media: undefined };
+  });
+  const [{ data: categories }, bannersResult] = await Promise.all([
+    supabaseAdmin.from("marketplace_categories").select("id,parent_id,code,name").eq("active", true).order("sort_order"),
+    supabaseAdmin.from("marketplace_banners").select("*").eq("active", true).order("sort_order")
+  ]);
+  res.json({ products, categories: categories || [], banners: bannersResult.data || [], authenticated: Boolean(user), page, pageSize, total: count || 0, totalPages: Math.max(1, Math.ceil((count || 0) / pageSize)) });
+});
+
+app.get("/api/marketplace/public/products/:id", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req);
+  const { data, error } = await supabaseAdmin.from("marketplace_products").select("*,marketplace_categories(id,name,code),supplier_organizations!inner(id,legal_name,trade_name,city,province,rating,review_count,identity_verified,completed_operations,average_response_minutes,approval_status,store_slug),marketplace_product_variants(*),marketplace_product_media(*)").eq("id", req.params.id).eq("status", "ACTIVE").eq("supplier_organizations.approval_status", "APPROVED").single();
+  if (error || !data) return res.status(404).json({ error: "Publicación no disponible" });
+  const media = (data.marketplace_product_media || []).sort((a: any, b: any) => a.sort_order - b.sort_order).map((item: any) => ({ ...item, url: `/api/marketplace/v2/media?path=${encodeURIComponent(item.storage_path)}` }));
+  res.json({ ...data, base_price: user ? data.base_price : null, financing_details: user ? data.financing_details : null, payment_methods: user ? data.payment_methods : [], price_locked: !user, marketplace_product_media: media });
+});
+
+app.get("/api/marketplace/public/products/:id/questions", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const { data, error } = await supabaseAdmin.from("marketplace_public_questions").select("id,question,answer,answered_at,created_at").eq("product_id", req.params.id).is("hidden_at", null).order("created_at", { ascending: false }).limit(100);
+  if (error) return res.status(400).json({ error: error.message }); res.json(data || []);
+});
+
+app.get("/api/marketplace/public/stores/:slug", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req);
+  const { data: supplier, error } = await supabaseAdmin.from("supplier_organizations").select("id,legal_name,trade_name,company_description,city,province,store_slug,store_logo_path,store_banner_path,rating,review_count,identity_verified,completed_operations,average_response_minutes,approval_status").eq("store_slug", req.params.slug).eq("approval_status", "APPROVED").single();
+  if (error || !supplier) return res.status(404).json({ error: "Tienda no disponible" });
+  const { data: membership } = await supabaseAdmin.from("marketplace_featured_memberships").select("id,status,current_period_end").eq("supplier_id", supplier.id).eq("status", "ACTIVE").gte("current_period_end", new Date().toISOString().slice(0, 10)).maybeSingle();
+  if (!membership) return res.status(404).json({ error: "La tienda no tiene una membresía activa" });
+  const { data: featured } = await supabaseAdmin.from("marketplace_featured_products").select("product_id,sort_order").eq("membership_id", membership.id).order("sort_order");
+  const { data: products } = await supabaseAdmin.from("marketplace_products").select("id,name,description,brand,currency,base_price,price_on_request,vat_included,stock_quantity,publication_type,category_id,marketplace_categories(name),marketplace_product_media(storage_path,sort_order)").eq("supplier_id", supplier.id).eq("status", "ACTIVE").gt("expires_at", new Date().toISOString()).order("published_at", { ascending: false });
+  const featuredIds = new Set((featured || []).map(item => item.product_id));
+  res.json({ supplier, membership, products: (products || []).map((product: any) => { const media = (product.marketplace_product_media || []).sort((a: any,b: any)=>a.sort_order-b.sort_order); return { ...product, base_price: user ? product.base_price : null, price_locked: !user, featured: featuredIds.has(product.id), image_url: media[0]?.storage_path ? `/api/marketplace/v2/media?path=${encodeURIComponent(media[0].storage_path)}` : null, marketplace_product_media: undefined }; }).sort((a: any,b: any)=>Number(b.featured)-Number(a.featured)) });
+});
+
+app.get("/api/marketplace/public/tenders", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req);
+  if (!user) return res.status(401).json({ error: "Debe iniciar sesión como proveedor aprobado" });
+  const { data: membership } = await supabaseAdmin.from("supplier_members").select("supplier_id,supplier_organizations(approval_status)").eq("user_id", user.id).eq("active", true).maybeSingle();
+  const organization: any = Array.isArray(membership?.supplier_organizations) ? membership?.supplier_organizations[0] : membership?.supplier_organizations;
+  if (!membership || organization?.approval_status !== "APPROVED") return res.status(403).json({ error: "Las licitaciones son exclusivas para proveedores aprobados" });
+  const page = Math.max(1, Number(req.query.page || 1)); const pageSize = 12;
+  const { data, error, count } = await supabaseAdmin.from("marketplace_tenders").select("id,title,description,process_type,visibility,scope_type,status,opening_at,closes_at,created_at,tenants(name),marketplace_tender_lines(id)", { count: "exact" }).eq("visibility", "PUBLIC").in("status", ["PUBLISHED","QUESTIONS","CLOSED","AWARDED"]).order("closes_at").range((page - 1) * pageSize, page * pageSize - 1);
+  if (error) return res.status(400).json({ error: error.message });
+  const tenderIds = (data || []).map((item: any) => item.id);
+  const submissionResult = tenderIds.length ? await supabaseAdmin.from("marketplace_submissions").select("tender_id,supplier_id").in("tender_id", tenderIds) : { data: [] as any[] };
+  res.json({ tenders: (data || []).map((tender: any) => ({ ...tender, participant_count: new Set((submissionResult.data || []).filter((s: any) => s.tender_id === tender.id).map((s: any) => s.supplier_id)).size })), page, total: count || 0, totalPages: Math.max(1, Math.ceil((count || 0) / pageSize)) });
+});
+
+app.post("/api/marketplace/v2/checkout", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req);
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (!user || !tenantId) return res.status(403).json({ error: "La compra requiere una organización validada" });
+  try {
+    const projectId = req.body.projectId ? await resolveDatabaseProjectId(req.body.projectId, tenantId) : null;
+    const budgetLineId = req.body.budgetLineId && /^[0-9a-f-]{36}$/i.test(req.body.budgetLineId) ? req.body.budgetLineId : null;
+    const { data, error } = await supabaseAdmin.rpc("confirm_marketplace_purchase", {
+      p_requested_by: user.id,
+      p_tenant_id: tenantId,
+      p_project_id: projectId,
+      p_budget_line_id: budgetLineId,
+      p_delivery_location: req.body.deliveryLocation || null,
+      p_required_date: req.body.requiredDate || null,
+      p_payment_terms: req.body.paymentTerms || null,
+      p_notes: req.body.notes || null,
+      p_items: req.body.items || []
+    });
+    if (error) return res.status(400).json({ error: error.message });
+    res.status(201).json(data);
+  } catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "No se pudo confirmar la compra" }); }
+});
+
+app.get("/api/marketplace/v2/favorites", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" }); const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const { data, error } = await supabaseAdmin.from("marketplace_favorites").select("id,favorite_type,product_id,supplier_id,created_at").eq("user_id", user.id); if (error) return res.status(400).json({ error: error.message }); res.json(data || []);
+});
+
+app.post("/api/marketplace/v2/favorites/toggle", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" }); const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const type = String(req.body.type || "").toUpperCase(); if (!["PRODUCT","SUPPLIER"].includes(type)) return res.status(400).json({ error: "Favorito inválido" });
+  let query = supabaseAdmin.from("marketplace_favorites").select("id").eq("user_id", user.id).eq("favorite_type", type); query = type === "PRODUCT" ? query.eq("product_id", req.body.id) : query.eq("supplier_id", req.body.id); const { data: existing } = await query.maybeSingle();
+  if (existing) { await supabaseAdmin.from("marketplace_favorites").delete().eq("id", existing.id); return res.json({ favorite: false }); }
+  const { error } = await supabaseAdmin.from("marketplace_favorites").insert({ user_id: user.id, favorite_type: type, product_id: type === "PRODUCT" ? req.body.id : null, supplier_id: type === "SUPPLIER" ? req.body.id : null }); if (error) return res.status(400).json({ error: error.message }); res.json({ favorite: true });
+});
+
+app.post("/api/marketplace/v2/products/:id/questions", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" }); const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const question = String(req.body.question || "").trim(); if (question.length < 5) return res.status(400).json({ error: "La consulta es demasiado breve" });
+  if (/(\+?\d[\d\s().-]{7,}|[\w.+-]+@[\w.-]+\.[a-z]{2,})/i.test(question)) return res.status(400).json({ error: "No se permiten teléfonos ni correos en las consultas" });
+  const { data, error } = await supabaseAdmin.from("marketplace_public_questions").insert({ product_id: req.params.id, asked_by: user.id, question }).select("id,question,created_at").single(); if (error) return res.status(400).json({ error: error.message }); res.status(201).json(data);
+});
+
+app.get("/api/marketplace/v2/notifications", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" }); const user=await getRequestAuthUser(req); if(!user)return res.status(401).json({error:"Sesión requerida"});
+  const {data,error}=await supabaseAdmin.from("marketplace_notifications").select("*").eq("user_id",user.id).order("created_at",{ascending:false}).limit(100); if(error)return res.status(400).json({error:error.message}); res.json({notifications:data||[],unread:(data||[]).filter(item=>!item.read_at).length});
+});
+
+app.put("/api/marketplace/v2/notifications/:id/read", async (req: Request, res: Response) => {
+  if(!supabaseAdmin)return res.status(503).json({error:"Supabase no está configurado"}); const user=await getRequestAuthUser(req); if(!user)return res.status(401).json({error:"Sesión requerida"}); const {data,error}=await supabaseAdmin.from("marketplace_notifications").update({read_at:new Date().toISOString()}).eq("id",req.params.id).eq("user_id",user.id).select().single(); if(error)return res.status(400).json({error:error.message}); res.json(data);
+});
+
+app.put("/api/marketplace/v2/notifications/read-all", async (req: Request, res: Response) => {
+  if(!supabaseAdmin)return res.status(503).json({error:"Supabase no está configurado"}); const user=await getRequestAuthUser(req); if(!user)return res.status(401).json({error:"Sesión requerida"}); const {error}=await supabaseAdmin.from("marketplace_notifications").update({read_at:new Date().toISOString()}).eq("user_id",user.id).is("read_at",null); if(error)return res.status(400).json({error:error.message}); res.json({ok:true});
+});
+
+app.put("/api/marketplace/v2/supplier/store", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" }); const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const { data: member } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", user.id).eq("active", true).maybeSingle(); if (!member) return res.status(403).json({ error: "Acceso exclusivo de proveedor" });
+  const slug = String(req.body.slug || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""); if (slug.length < 3) return res.status(400).json({ error: "El identificador de tienda es inválido" });
+  const updates = {
+    store_slug: slug,
+    trade_name: String(req.body.tradeName || "").trim() || null,
+    company_description: String(req.body.description || "").trim() || null,
+    city: String(req.body.city || "").trim() || null,
+    province: String(req.body.province || "").trim() || null
+  };
+  const { data, error } = await supabaseAdmin.from("supplier_organizations").update(updates).eq("id", member.supplier_id).select("id,store_slug,trade_name,company_description,city,province").single(); if (error) return res.status(400).json({ error: error.message }); res.json(data);
+});
+
+app.put("/api/marketplace/v2/questions/:id/answer", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const { data: member } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", user.id).eq("active", true).maybeSingle(); if (!member) return res.status(403).json({ error: "Acceso exclusivo de proveedor" });
+  const answer = String(req.body.answer || "").trim(); if (answer.length < 2) return res.status(400).json({ error: "Debe escribir una respuesta" });
+  if (/(\+?\d[\d\s().-]{7,}|[\w.+-]+@[\w.-]+\.[a-z]{2,})/i.test(answer)) return res.status(400).json({ error: "No se permiten teléfonos ni correos en las respuestas" });
+  const { data: question } = await supabaseAdmin.from("marketplace_public_questions").select("id,marketplace_products!inner(supplier_id)").eq("id", req.params.id).single();
+  const product: any = Array.isArray(question?.marketplace_products) ? question?.marketplace_products[0] : question?.marketplace_products;
+  if (!question || product?.supplier_id !== member.supplier_id) return res.status(403).json({ error: "La consulta no pertenece a su empresa" });
+  const { data, error } = await supabaseAdmin.from("marketplace_public_questions").update({ answer, answered_by: user.id, answered_at: new Date().toISOString() }).eq("id", req.params.id).select("id,answer,answered_at").single();
+  if (error) return res.status(400).json({ error: error.message }); res.json(data);
+});
+
+app.put("/api/marketplace/v2/featured-products/:productId", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const { data: member } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", user.id).eq("active", true).maybeSingle(); if (!member) return res.status(403).json({ error: "Acceso exclusivo de proveedor" });
+  const { data: product } = await supabaseAdmin.from("marketplace_products").select("id,supplier_id,status").eq("id", req.params.productId).single(); if (!product || product.supplier_id !== member.supplier_id) return res.status(403).json({ error: "La publicación no pertenece a su empresa" });
+  const { data: membership } = await supabaseAdmin.from("marketplace_featured_memberships").select("id").eq("supplier_id", member.supplier_id).eq("status", "ACTIVE").gte("current_period_end", new Date().toISOString().slice(0,10)).order("created_at", { ascending: false }).limit(1).maybeSingle(); if (!membership) return res.status(403).json({ error: "Necesita una membresía destacada activa" });
+  if (!req.body.featured) { await supabaseAdmin.from("marketplace_featured_products").delete().eq("membership_id", membership.id).eq("product_id", product.id); return res.json({ featured: false }); }
+  const { data: setting } = await supabaseAdmin.from("platform_settings").select("value").eq("setting_key", "featured_membership_max_products").maybeSingle(); const maximum = Number(setting?.value || 10);
+  const { count } = await supabaseAdmin.from("marketplace_featured_products").select("product_id", { count: "exact", head: true }).eq("membership_id", membership.id); if ((count || 0) >= maximum) return res.status(400).json({ error: `Puede destacar hasta ${maximum} publicaciones` });
+  const { error } = await supabaseAdmin.from("marketplace_featured_products").upsert({ membership_id: membership.id, product_id: product.id, sort_order: count || 0 }); if (error) return res.status(400).json({ error: error.message }); res.json({ featured: true });
+});
+
 app.get("/api/marketplace/v2/context", async (req: Request, res: Response) => {
   if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
   try {
@@ -1481,6 +1723,21 @@ app.get("/api/marketplace/v2/context", async (req: Request, res: Response) => {
       const result = await query;
       submissions = (result.data || []).filter((submission: any) => supplier || submission.marketplace_tenders?.tenant_id === tenantId);
     }
+    let supplierQuestions: any[] = [];
+    let featuredMembership: any = null;
+    let featuredProductIds: string[] = [];
+    if (supplier) {
+      const [questionsResult, membershipResult] = await Promise.all([
+        supabaseAdmin.from("marketplace_public_questions").select("id,product_id,question,answer,answered_at,created_at,marketplace_products!inner(name,supplier_id)").eq("marketplace_products.supplier_id", supplier.id).is("hidden_at", null).order("created_at", { ascending: false }),
+        supabaseAdmin.from("marketplace_featured_memberships").select("*").eq("supplier_id", supplier.id).eq("status", "ACTIVE").gte("current_period_end", new Date().toISOString().slice(0, 10)).order("created_at", { ascending: false }).limit(1).maybeSingle()
+      ]);
+      supplierQuestions = questionsResult.data || [];
+      featuredMembership = membershipResult.data || null;
+      if (featuredMembership) {
+        const { data: featuredRows } = await supabaseAdmin.from("marketplace_featured_products").select("product_id").eq("membership_id", featuredMembership.id);
+        featuredProductIds = (featuredRows || []).map(row => row.product_id);
+      }
+    }
     let feeRules: any[] = [];
     let serviceFees: any[] = [];
     if (isSuperAdmin) {
@@ -1519,6 +1776,9 @@ app.get("/api/marketplace/v2/context", async (req: Request, res: Response) => {
       submissions,
       feeRules,
       serviceFees
+      ,supplierQuestions
+      ,featuredMembership
+      ,featuredProductIds
     });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "No se pudo cargar el Marketplace" });
@@ -1537,6 +1797,7 @@ app.post("/api/marketplace/v2/products", async (req: Request, res: Response) => 
       category_id: product.categoryId,
       name: product.name,
       description: product.description,
+      publication_type: product.publicationType || "PRODUCT",
       brand: product.brand || null,
       model: product.model || null,
       sale_unit: product.saleUnit,
@@ -1544,7 +1805,10 @@ app.post("/api/marketplace/v2/products", async (req: Request, res: Response) => 
       base_price: product.priceOnRequest ? null : Number(product.basePrice),
       price_on_request: Boolean(product.priceOnRequest),
       vat_included: Boolean(product.vatIncluded),
-      stock_quantity: product.stockQuantity === "" ? null : Number(product.stockQuantity),
+      stock_quantity: product.publicationType === "SERVICE" || product.stockQuantity === "" ? null : Number(product.stockQuantity),
+      service_available: product.publicationType === "SERVICE" ? Boolean(product.serviceAvailable) : true,
+      service_people_capacity: product.publicationType === "SERVICE" ? Number(product.servicePeopleCapacity || 1) : null,
+      service_hours_per_day: product.publicationType === "SERVICE" ? Number(product.serviceHoursPerDay || 8) : null,
       minimum_quantity: Number(product.minimumQuantity || 1),
       delivery_lead_days: product.deliveryLeadDays ? Number(product.deliveryLeadDays) : null,
       location: product.location || null,
@@ -1646,11 +1910,14 @@ app.put("/api/marketplace/v2/products/:id/status", async (req: Request, res: Res
 
 app.put("/api/marketplace/v2/products/:id", async (req: Request, res: Response) => {
   if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
-  const supplier = await getSupplierForEmail(req.body.email);
-  if (!supplier) return res.status(403).json({ error: "Acceso denegado" });
+  const authUser = await getRequestAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: "Sesión requerida" });
+  const { data: supplierMember } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", authUser.id).eq("active", true).maybeSingle();
+  if (!supplierMember) return res.status(403).json({ error: "Acceso exclusivo de proveedor" });
   const allowedFields: Record<string, unknown> = {
     name: req.body.name,
     description: req.body.description,
+    publication_type: req.body.publicationType || "PRODUCT",
     category_id: req.body.categoryId,
     brand: req.body.brand || null,
     model: req.body.model || null,
@@ -1659,7 +1926,10 @@ app.put("/api/marketplace/v2/products/:id", async (req: Request, res: Response) 
     base_price: req.body.priceOnRequest ? null : Number(req.body.basePrice),
     price_on_request: Boolean(req.body.priceOnRequest),
     vat_included: Boolean(req.body.vatIncluded),
-    stock_quantity: req.body.stockQuantity === "" ? null : Number(req.body.stockQuantity),
+    stock_quantity: req.body.publicationType === "SERVICE" || req.body.stockQuantity === "" ? null : Number(req.body.stockQuantity),
+    service_available: req.body.publicationType === "SERVICE" ? Boolean(req.body.serviceAvailable) : true,
+    service_people_capacity: req.body.publicationType === "SERVICE" ? Number(req.body.servicePeopleCapacity || 1) : null,
+    service_hours_per_day: req.body.publicationType === "SERVICE" ? Number(req.body.serviceHoursPerDay || 8) : null,
     minimum_quantity: Number(req.body.minimumQuantity || 1),
     delivery_lead_days: req.body.deliveryLeadDays ? Number(req.body.deliveryLeadDays) : null,
     location: req.body.location || null,
@@ -1746,8 +2016,17 @@ app.put("/api/marketplace/v2/direct-requests/:id/respond", async (req: Request, 
   const supplier = await getSupplierForEmail(req.body.email);
   if (!supplier) return res.status(403).json({ error: "Acceso denegado" });
   if (!["ACCEPTED", "REJECTED", "CHANGES_PROPOSED"].includes(req.body.status)) return res.status(400).json({ error: "Respuesta inválida" });
-  const { data, error } = await supabaseAdmin.from("marketplace_direct_requests").update({ status: req.body.status, supplier_response: req.body.response || null }).eq("id", req.params.id).eq("supplier_id", supplier.id).select().single();
+  const proposedItems = Array.isArray(req.body.items) ? req.body.items : [];
+  if (req.body.status === "CHANGES_PROPOSED" && !String(req.body.response || "").trim() && !proposedItems.length) return res.status(400).json({ error: "Debe detallar la contrapropuesta" });
+  for (const item of proposedItems) {
+    const price = Number(item.proposedUnitPrice);
+    if (!item.id || !Number.isFinite(price) || price < 0) return res.status(400).json({ error: "Hay precios propuestos inválidos" });
+    await supabaseAdmin.from("marketplace_direct_request_items").update({ proposed_unit_price: price }).eq("id", item.id).eq("request_id", req.params.id);
+  }
+  const { data, error } = await supabaseAdmin.from("marketplace_direct_requests").update({ status: req.body.status, supplier_response: req.body.response || null, last_action_by: authUser.id, last_action_at: new Date().toISOString() }).eq("id", req.params.id).eq("supplier_id", supplierMember.supplier_id).select().single();
   if (error) return res.status(400).json({ error: error.message });
+  await supabaseAdmin.from("marketplace_direct_request_events").insert({ request_id: data.id, actor_id: authUser.id, actor_type: "SUPPLIER", event_type: req.body.status, message: req.body.response || null, proposed_items: proposedItems.length ? proposedItems : null });
+  await supabaseAdmin.from("marketplace_notifications").insert({ user_id: data.requested_by, notification_type: `DIRECT_REQUEST_${req.body.status}`, title: "El proveedor respondió su solicitud", message: req.body.status === "CHANGES_PROPOSED" ? "Recibió una contrapropuesta para revisar" : `La solicitud fue ${req.body.status === "ACCEPTED" ? "aceptada" : "rechazada"}`, entity_type: "DIRECT_REQUEST", entity_id: data.id });
   if (req.body.status === "ACCEPTED") {
     const { data: items } = await supabaseAdmin.from("marketplace_direct_request_items").select("quantity,unit_price,proposed_unit_price").eq("request_id", req.params.id);
     const taxableAmount = (items || []).reduce((total, item) => total + Number(item.quantity) * Number(item.proposed_unit_price ?? item.unit_price ?? 0), 0);
@@ -1755,6 +2034,63 @@ app.put("/api/marketplace/v2/direct-requests/:id/respond", async (req: Request, 
     await supabaseAdmin.from("marketplace_service_fees").upsert({ operation_type: "DIRECT_PURCHASE", direct_request_id: data.id, tender_id: null, supplier_id: data.supplier_id, tenant_id: data.tenant_id, currency: data.currency, taxable_amount: taxableAmount, percentage: fee.percentage, fee_amount: fee.feeAmount, status: "PENDING", calculated_at: new Date().toISOString() }, { onConflict: "direct_request_id" });
   }
   res.json(data);
+});
+
+app.put("/api/marketplace/v2/direct-requests/:id/buyer-response", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req);
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (!user || !tenantId) return res.status(403).json({ error: "Acceso exclusivo de la constructora compradora" });
+  const action = String(req.body.action || "");
+  if (!["ACCEPT_CHANGES", "CANCEL"].includes(action)) return res.status(400).json({ error: "Acción inválida" });
+  const { data: current } = await supabaseAdmin.from("marketplace_direct_requests").select("*").eq("id", req.params.id).eq("tenant_id", tenantId).single();
+  if (!current) return res.status(404).json({ error: "Solicitud no encontrada" });
+  if (action === "ACCEPT_CHANGES" && current.status !== "CHANGES_PROPOSED") return res.status(409).json({ error: "La solicitud no tiene una contrapropuesta pendiente" });
+  const status = action === "ACCEPT_CHANGES" ? "ACCEPTED" : "CANCELLED";
+  const { data, error } = await supabaseAdmin.from("marketplace_direct_requests").update({ status, buyer_response: req.body.response || null, last_action_by: user.id, last_action_at: new Date().toISOString() }).eq("id", current.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  await supabaseAdmin.from("marketplace_direct_request_events").insert({ request_id: current.id, actor_id: user.id, actor_type: "BUYER", event_type: action === "ACCEPT_CHANGES" ? "CHANGES_ACCEPTED" : "CANCELLED", message: req.body.response || null });
+  const { data: members } = await supabaseAdmin.from("supplier_members").select("user_id").eq("supplier_id", current.supplier_id).eq("active", true);
+  if (members?.length) await supabaseAdmin.from("marketplace_notifications").insert(members.map(member => ({ user_id: member.user_id, notification_type: `DIRECT_REQUEST_${status}`, title: "La constructora respondió la solicitud", message: action === "ACCEPT_CHANGES" ? "La contrapropuesta fue aceptada" : "La solicitud fue cancelada", entity_type: "DIRECT_REQUEST", entity_id: current.id })));
+  res.json(data);
+});
+
+app.put("/api/marketplace/v2/direct-requests/:id/operation", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const action = String(req.body.action || ""); if (!["COMPLETE","CLAIM"].includes(action)) return res.status(400).json({ error: "Acción inválida" });
+  const { data: request } = await supabaseAdmin.from("marketplace_direct_requests").select("*").eq("id", req.params.id).single(); if (!request) return res.status(404).json({ error: "Solicitud no encontrada" });
+  const { data: tenantMember } = await supabaseAdmin.from("tenant_members").select("tenant_id").eq("user_id", user.id).eq("tenant_id", request.tenant_id).eq("active", true).maybeSingle();
+  const { data: supplierMember } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", user.id).eq("supplier_id", request.supplier_id).eq("active", true).maybeSingle();
+  if (!tenantMember && !supplierMember) return res.status(403).json({ error: "No participa de esta operación" });
+  if (action === "COMPLETE" && (!tenantMember || request.status !== "ACCEPTED")) return res.status(409).json({ error: "Solo la constructora puede confirmar la recepción de una operación aceptada" });
+  if (action === "CLAIM" && !["ACCEPTED","COMPLETED"].includes(request.status)) return res.status(409).json({ error: "La operación no admite reclamos en su estado actual" });
+  const claimDescription = String(req.body.message || "").trim();
+  if (action === "CLAIM" && claimDescription.length < 5) return res.status(400).json({ error: "Debe describir el reclamo" });
+  const status = action === "COMPLETE" ? "COMPLETED" : "CLAIMED";
+  const { data, error } = await supabaseAdmin.from("marketplace_direct_requests").update({ status, last_action_by: user.id, last_action_at: new Date().toISOString() }).eq("id", request.id).select().single(); if (error) return res.status(400).json({ error: error.message });
+  await supabaseAdmin.from("marketplace_direct_request_events").insert({ request_id: request.id, actor_id: user.id, actor_type: tenantMember ? "BUYER" : "SUPPLIER", event_type: action === "COMPLETE" ? "COMPLETED" : "COMMENT", message: req.body.message || (action === "COMPLETE" ? "Recepción confirmada" : "Se abrió un reclamo") });
+  if (action === "COMPLETE") {
+    await supabaseAdmin.from("supplier_organizations").update({ completed_operations: Number((await supabaseAdmin.from("supplier_organizations").select("completed_operations").eq("id", request.supplier_id).single()).data?.completed_operations || 0) + 1 }).eq("id", request.supplier_id);
+  } else {
+    const subject = String(req.body.subject || "Reclamo sobre compra directa").trim();
+    await supabaseAdmin.from("marketplace_complaints").insert({ operation_type: "DIRECT_REQUEST", operation_id: request.id, created_by: user.id, complainant_party_type: tenantMember ? "TENANT" : "SUPPLIER", complainant_party_id: tenantMember ? request.tenant_id : request.supplier_id, respondent_party_id: tenantMember ? request.supplier_id : request.tenant_id, subject, description: claimDescription });
+  }
+  res.json(data);
+});
+
+app.post("/api/marketplace/v2/direct-requests/:id/review", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const { data: request } = await supabaseAdmin.from("marketplace_direct_requests").select("*").eq("id", req.params.id).eq("status", "COMPLETED").single(); if (!request) return res.status(409).json({ error: "Solo se califican operaciones finalizadas" });
+  const { data: tenantMember } = await supabaseAdmin.from("tenant_members").select("tenant_id").eq("user_id", user.id).eq("tenant_id", request.tenant_id).eq("active", true).maybeSingle();
+  const { data: supplierMember } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", user.id).eq("supplier_id", request.supplier_id).eq("active", true).maybeSingle();
+  if (!tenantMember && !supplierMember) return res.status(403).json({ error: "No participa de esta operación" });
+  const ratings = ["priceRating","qualityRating","deliveryRating","serviceRating"].map(key => Number(req.body[key])); if (ratings.some(value => !Number.isInteger(value) || value < 1 || value > 5)) return res.status(400).json({ error: "Todas las calificaciones deben estar entre 1 y 5" });
+  const reviewerType = tenantMember ? "TENANT" : "SUPPLIER";
+  const { data, error } = await supabaseAdmin.from("marketplace_reviews").insert({ operation_type: "DIRECT_REQUEST", operation_id: request.id, reviewer_user_id: user.id, reviewer_party_type: reviewerType, reviewed_party_id: tenantMember ? request.supplier_id : request.tenant_id, price_rating: ratings[0], quality_rating: ratings[1], delivery_rating: ratings[2], service_rating: ratings[3], comment: req.body.comment || null }).select().single(); if (error) return res.status(400).json({ error: error.code === "23505" ? "Ya calificó esta operación" : error.message });
+  if (tenantMember) { const { data: reviews } = await supabaseAdmin.from("marketplace_reviews").select("price_rating,quality_rating,delivery_rating,service_rating").eq("reviewer_party_type", "TENANT").eq("reviewed_party_id", request.supplier_id); const scores = (reviews || []).flatMap(review => [review.price_rating,review.quality_rating,review.delivery_rating,review.service_rating].filter(Boolean).map(Number)); await supabaseAdmin.from("supplier_organizations").update({ rating: scores.length ? scores.reduce((a,b)=>a+b,0)/scores.length : null, review_count: reviews?.length || 0 }).eq("id", request.supplier_id); }
+  res.status(201).json(data);
 });
 
 app.post("/api/marketplace/v2/tenders", async (req: Request, res: Response) => {
@@ -1803,22 +2139,82 @@ app.post("/api/marketplace/v2/tenders", async (req: Request, res: Response) => {
     if (invitedSupplierIds.length) {
       await supabaseAdmin.from("marketplace_tender_invites").insert(invitedSupplierIds.map((supplierId: string) => ({ tender_id: data.id, supplier_id: supplierId })));
     }
+    let notifiedSupplierIds: string[] = invitedSupplierIds;
+    if (tender.visibility === "PUBLIC") { const { data: approved } = await supabaseAdmin.from("supplier_organizations").select("id").eq("approval_status", "APPROVED"); notifiedSupplierIds = (approved || []).map(item => item.id); }
+    if (tender.visibility === "LIMITED" && categoryIds.length) { const { data: matching } = await supabaseAdmin.from("supplier_organizations").select("id").eq("approval_status", "APPROVED").overlaps("category_ids", categoryIds); notifiedSupplierIds = (matching || []).map(item => item.id); }
+    if (notifiedSupplierIds.length) { const { data: members } = await supabaseAdmin.from("supplier_members").select("user_id").in("supplier_id", notifiedSupplierIds).eq("active", true); if (members?.length) await supabaseAdmin.from("marketplace_notifications").insert(members.map(member => ({ user_id: member.user_id, notification_type: "TENDER_PUBLISHED", title: "Nueva licitación disponible", message: tender.title, entity_type: "TENDER", entity_id: data.id }))); }
     res.status(201).json(data);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : "No se pudo crear la licitación" });
   }
 });
 
+app.get("/api/marketplace/v2/tenders/:id/communications", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  const { data: tender } = await supabaseAdmin.from("marketplace_tenders").select("id,tenant_id,status,visibility,public_answers,questions_until").eq("id", req.params.id).single(); if (!tender) return res.status(404).json({ error: "Licitación no encontrada" });
+  const { data: tenantMember } = await supabaseAdmin.from("tenant_members").select("tenant_id").eq("user_id", user.id).eq("tenant_id", tender.tenant_id).eq("active", true).maybeSingle();
+  const { data: supplierMember } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", user.id).eq("active", true).maybeSingle();
+  if (!tenantMember && !supplierMember) return res.status(403).json({ error: "No tiene acceso a este proceso" });
+  let documentQuery = supabaseAdmin.from("marketplace_tender_documents").select("id,title,mime_type,file_size,document_type,created_at").eq("tender_id", tender.id).order("created_at");
+  if (supplierMember) documentQuery = documentQuery.eq("visible_to_suppliers", true);
+  const [{ data: questions, error: questionError }, { data: documents, error: documentError }] = await Promise.all([
+    supabaseAdmin.from("marketplace_tender_questions").select("id,supplier_id,question,answer,answered_at,created_at,supplier_organizations(trade_name,legal_name)").eq("tender_id", tender.id).order("created_at"),
+    documentQuery
+  ]);
+  if (questionError || documentError) return res.status(400).json({ error: questionError?.message || documentError?.message });
+  const visibleQuestions = tenantMember || tender.public_answers ? questions || [] : (questions || []).filter((question:any)=>question.supplier_id===supplierMember?.supplier_id);
+  res.json({ questions: visibleQuestions, documents: documents || [], canAsk: Boolean(supplierMember && (!tender.questions_until || new Date(tender.questions_until).getTime()>Date.now())), canAnswer: Boolean(tenantMember) });
+});
+
+app.post("/api/marketplace/v2/tenders/:id/questions", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" }); const user=await getRequestAuthUser(req); if(!user)return res.status(401).json({error:"Sesión requerida"});
+  const { data: member }=await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id",user.id).eq("active",true).maybeSingle(); if(!member)return res.status(403).json({error:"Acceso exclusivo de proveedor"});
+  const { data: tender }=await supabaseAdmin.from("marketplace_tenders").select("tenant_id,questions_until,status").eq("id",req.params.id).single(); if(!tender||!["PUBLISHED","QUESTIONS"].includes(tender.status)||tender.questions_until&&new Date(tender.questions_until).getTime()<=Date.now())return res.status(409).json({error:"El período de consultas está cerrado"});
+  const question=String(req.body.question||"").trim(); if(question.length<5)return res.status(400).json({error:"La consulta es demasiado breve"}); if (/(\+?\d[\d\s().-]{7,}|[\w.+-]+@[\w.-]+\.[a-z]{2,})/i.test(question)) return res.status(400).json({error:"No se permiten datos de contacto"});
+  const {data,error}=await supabaseAdmin.from("marketplace_tender_questions").insert({tender_id:req.params.id,supplier_id:member.supplier_id,question}).select().single(); if(error)return res.status(400).json({error:error.message});
+  const {data:buyers}=await supabaseAdmin.from("tenant_members").select("user_id").eq("tenant_id",tender.tenant_id).eq("active",true).in("role",["owner","admin","purchasing_manager"]); if(buyers?.length)await supabaseAdmin.from("marketplace_notifications").insert(buyers.map(buyer=>({user_id:buyer.user_id,notification_type:"TENDER_QUESTION",title:"Nueva consulta en una licitación",message:question,entity_type:"TENDER",entity_id:req.params.id})));
+  res.status(201).json(data);
+});
+
+app.put("/api/marketplace/v2/tender-questions/:id/answer", async (req: Request, res: Response) => {
+  if(!supabaseAdmin)return res.status(503).json({error:"Supabase no está configurado"}); const user=await getRequestAuthUser(req); const tenantId=(req as Request & {authTenantId?:string}).authTenantId; if(!user||!tenantId)return res.status(403).json({error:"Acceso exclusivo del licitante"});
+  const answer=String(req.body.answer||"").trim(); if(answer.length<2)return res.status(400).json({error:"Debe escribir una respuesta"});
+  const {data:question}=await supabaseAdmin.from("marketplace_tender_questions").select("id,supplier_id,marketplace_tenders!inner(tenant_id,public_answers)").eq("id",req.params.id).single(); const linkedTender:any=Array.isArray(question?.marketplace_tenders)?question?.marketplace_tenders[0]:question?.marketplace_tenders; if(!question||linkedTender?.tenant_id!==tenantId)return res.status(403).json({error:"La consulta no pertenece a su organización"});
+  const {data,error}=await supabaseAdmin.from("marketplace_tender_questions").update({answer,answered_by:user.id,answered_at:new Date().toISOString()}).eq("id",req.params.id).select().single(); if(error)return res.status(400).json({error:error.message});
+  const {data:members}=await supabaseAdmin.from("supplier_members").select("user_id").eq("supplier_id",question.supplier_id).eq("active",true); if(members?.length)await supabaseAdmin.from("marketplace_notifications").insert(members.map(member=>({user_id:member.user_id,notification_type:"TENDER_ANSWER",title:"Respondieron su consulta",message:answer,entity_type:"TENDER_QUESTION",entity_id:question.id})));
+  res.json(data);
+});
+
+app.post("/api/marketplace/v2/tenders/:id/documents", async (req: Request, res: Response) => {
+  if(!supabaseAdmin)return res.status(503).json({error:"Supabase no está configurado"}); const user=await getRequestAuthUser(req); const tenantId=(req as Request & {authTenantId?:string}).authTenantId; if(!user||!tenantId)return res.status(403).json({error:"Acceso exclusivo del licitante"});
+  const {data:tender}=await supabaseAdmin.from("marketplace_tenders").select("tenant_id").eq("id",req.params.id).single(); if(!tender||tender.tenant_id!==tenantId)return res.status(403).json({error:"La licitación no pertenece a su organización"});
+  const mimeType=String(req.body.mimeType||""); if(!["application/pdf","image/jpeg","image/png","image/webp"].includes(mimeType)||!req.body.base64)return res.status(400).json({error:"Formato no admitido"}); const buffer=Buffer.from(req.body.base64,"base64"); if(!buffer.length||buffer.length>10*1024*1024)return res.status(400).json({error:"El archivo supera 10 MB"});
+  const extension=mimeType==="application/pdf"?"pdf":mimeType==="image/png"?"png":mimeType==="image/webp"?"webp":"jpg"; const storagePath=`${tenantId}/tenders/${req.params.id}/${randomUUID()}.${extension}`; const {error:uploadError}=await supabaseAdmin.storage.from("marketplace-tender-documents").upload(storagePath,buffer,{contentType:mimeType}); if(uploadError)return res.status(400).json({error:uploadError.message});
+  const {data,error}=await supabaseAdmin.from("marketplace_tender_documents").insert({tender_id:req.params.id,uploaded_by:user.id,title:String(req.body.title||"Documento"),storage_path:storagePath,mime_type:mimeType,file_size:buffer.length,document_type:req.body.documentType||"GENERAL",visible_to_suppliers:req.body.visibleToSuppliers!==false}).select().single(); if(error){await supabaseAdmin.storage.from("marketplace-tender-documents").remove([storagePath]);return res.status(400).json({error:error.message});} res.status(201).json(data);
+});
+
+app.get("/api/marketplace/v2/tender-documents/:id/download", async (req: Request, res: Response) => {
+  if(!supabaseAdmin)return res.status(503).end(); const user=await getRequestAuthUser(req); if(!user)return res.status(401).end(); const {data:document}=await supabaseAdmin.from("marketplace_tender_documents").select("storage_path,mime_type,title,tender_id,visible_to_suppliers,marketplace_tenders!inner(tenant_id,status)").eq("id",req.params.id).single(); if(!document)return res.status(404).end();
+  const linkedTender:any=Array.isArray(document.marketplace_tenders)?document.marketplace_tenders[0]:document.marketplace_tenders; const {data:tenantMember}=await supabaseAdmin.from("tenant_members").select("tenant_id").eq("user_id",user.id).eq("tenant_id",linkedTender?.tenant_id).eq("active",true).maybeSingle(); const {data:supplierMember}=await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id",user.id).eq("active",true).maybeSingle(); if(!tenantMember&&(!supplierMember||!document.visible_to_suppliers||linkedTender?.status==="DRAFT"))return res.status(403).end();
+  const {data,error}=await supabaseAdmin.storage.from("marketplace-tender-documents").download(document.storage_path); if(error||!data)return res.status(404).end(); res.setHeader("Content-Type",document.mime_type); res.setHeader("Content-Disposition",`inline; filename="${String(document.title).replace(/[\r\n\"]+/g,"_")}"`); res.send(Buffer.from(await data.arrayBuffer()));
+});
+
 app.post("/api/marketplace/v2/tenders/:id/submissions", async (req: Request, res: Response) => {
   if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
   try {
-    const supplier = await getSupplierForEmail(req.body.email);
-    const user = await findAuthUserByEmail(req.body.email);
-    if (!supplier || !user || supplier.approval_status !== "APPROVED") return res.status(403).json({ error: "Proveedor no habilitado" });
+    const user = await getRequestAuthUser(req);
+    if (!user) return res.status(401).json({ error: "Sesión requerida" });
+    const { data: supplierMember } = await supabaseAdmin.from("supplier_members").select("supplier_id,supplier_organizations(*)").eq("user_id", user.id).eq("active", true).maybeSingle();
+    const supplier: any = Array.isArray(supplierMember?.supplier_organizations) ? supplierMember?.supplier_organizations[0] : supplierMember?.supplier_organizations;
+    if (!supplierMember || supplier?.approval_status !== "APPROVED") return res.status(403).json({ error: "Proveedor no habilitado" });
     if (!req.body.termsAccepted) return res.status(400).json({ error: "Debe aceptar los términos antes de enviar" });
-    const { data, error } = await supabaseAdmin.from("marketplace_submissions").insert({ tender_id: req.params.id, supplier_id: supplier.id, submitted_by: user.id, requirement_answers: req.body.requirementAnswers || {}, terms_accepted: true, terms_accepted_at: new Date().toISOString() }).select().single();
+    const { data: tender } = await supabaseAdmin.from("marketplace_tenders").select("id,status,opening_at,closes_at,visibility").eq("id", req.params.id).single();
+    const now = Date.now(); if (!tender || !["PUBLISHED","QUESTIONS"].includes(tender.status) || new Date(tender.opening_at).getTime()>now || new Date(tender.closes_at).getTime()<=now) return res.status(409).json({ error: "La licitación no está abierta para recibir ofertas" });
+    if (tender.visibility === "PRIVATE") { const { data: invite } = await supabaseAdmin.from("marketplace_tender_invites").select("tender_id").eq("tender_id", tender.id).eq("supplier_id", supplierMember.supplier_id).maybeSingle(); if (!invite) return res.status(403).json({ error: "El proveedor no fue invitado a este proceso" }); }
+    const lines = req.body.lines || []; const { data: tenderLines } = await supabaseAdmin.from("marketplace_tender_lines").select("id").eq("tender_id", tender.id); const allowedLines = new Set((tenderLines||[]).map(line=>line.id)); if (!lines.length || lines.some((line:any)=>!allowedLines.has(line.tenderLineId))) return res.status(400).json({ error: "La oferta contiene renglones inválidos" });
+    const { data, error } = await supabaseAdmin.from("marketplace_submissions").insert({ tender_id: req.params.id, supplier_id: supplierMember.supplier_id, submitted_by: user.id, requirement_answers: req.body.requirementAnswers || {}, terms_accepted: true, terms_accepted_at: new Date().toISOString() }).select().single();
     if (error) return res.status(400).json({ error: error.code === "23505" ? "Ya presentó una oferta para esta licitación" : error.message });
-    const lines = req.body.lines || [];
     if (lines.length) {
       const { error: lineError } = await supabaseAdmin.from("marketplace_submission_lines").insert(lines.map((line: any) => ({ submission_id: data.id, tender_line_id: line.tenderLineId, offered: line.offered !== false, unit_price: line.offered === false ? null : Number(line.unitPrice), currency: line.offered === false ? null : line.currency, vat_rate: line.vatRate == null ? null : Number(line.vatRate), discount_percent: line.discountPercent == null ? null : Number(line.discountPercent), transport_cost: line.transportCost == null ? null : Number(line.transportCost), delivery_days: line.deliveryDays ? Number(line.deliveryDays) : null, validity_days: line.validityDays ? Number(line.validityDays) : null, payment_terms: line.paymentTerms || null, notes: line.notes || null })));
       if (lineError) return res.status(400).json({ error: lineError.message });
@@ -1832,12 +2228,18 @@ app.post("/api/marketplace/v2/tenders/:id/submissions", async (req: Request, res
 app.post("/api/marketplace/v2/tenders/:id/award", async (req: Request, res: Response) => {
   if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
   try {
-    const user = await findAuthUserByEmail(req.body.email);
-    const tenantId = await resolveDatabaseTenantId(req.body.tenantId);
-    const { data: tender } = await supabaseAdmin.from("marketplace_tenders").select("tenant_id,process_type").eq("id", req.params.id).single();
+    const user = await getRequestAuthUser(req);
+    const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+    const { data: tender } = await supabaseAdmin.from("marketplace_tenders").select("tenant_id,process_type,status").eq("id", req.params.id).single();
     if (!user || !tenantId || tender?.tenant_id !== tenantId) return res.status(403).json({ error: "Acceso denegado" });
     if (tender.process_type !== "RFP") return res.status(400).json({ error: "Las RFI no admiten adjudicación" });
+    if (tender.status === "AWARDED") return res.status(409).json({ error: "La licitación ya fue adjudicada" });
     const awards = req.body.awards || [];
+    if (!awards.length) return res.status(400).json({ error: "Debe seleccionar al menos un renglón" });
+    const tenderLineIds = awards.map((award:any)=>award.tenderLineId); if (new Set(tenderLineIds).size !== tenderLineIds.length) return res.status(400).json({ error: "Cada renglón solo puede adjudicarse a un proveedor" });
+    const { data: validLines } = await supabaseAdmin.from("marketplace_submission_lines").select("id,tender_line_id,marketplace_submissions!inner(tender_id)").in("id", awards.map((award:any)=>award.submissionLineId));
+    const validById = new Map((validLines||[]).map((line:any)=>[line.id,line]));
+    if (awards.some((award:any)=>{ const line:any=validById.get(award.submissionLineId); return !line || line.tender_line_id!==award.tenderLineId || line.marketplace_submissions?.tender_id!==req.params.id; })) return res.status(400).json({ error: "Una selección no pertenece a esta licitación o renglón" });
     const { error } = await supabaseAdmin.from("marketplace_line_awards").insert(awards.map((award: any) => ({ tender_line_id: award.tenderLineId, submission_line_id: award.submissionLineId, awarded_by: user.id, notes: award.notes || null })));
     if (error) return res.status(400).json({ error: error.message });
     const submissionLineIds = awards.map((award: any) => award.submissionLineId);
@@ -1858,7 +2260,18 @@ app.post("/api/marketplace/v2/tenders/:id/award", async (req: Request, res: Resp
     }
     for (const group of feeGroups.values()) {
       const fee = await calculateMarketplaceFee("TENDER_AWARD", group.amount, group.currency);
-      await supabaseAdmin.from("marketplace_service_fees").upsert({ operation_type: "TENDER_AWARD", direct_request_id: null, tender_id: req.params.id, supplier_id: group.supplierId, tenant_id: tenantId, currency: group.currency, taxable_amount: group.amount, percentage: fee.percentage, fee_amount: fee.feeAmount, status: "PENDING", calculated_at: new Date().toISOString() }, { onConflict: "tender_id,supplier_id,currency" });
+      const taxAmount = Math.round(fee.feeAmount * 0.21 * 100) / 100;
+      const baseFee = { operation_type: "TENDER_AWARD", direct_request_id: null, tender_id: req.params.id, supplier_id: group.supplierId, tenant_id: tenantId, currency: group.currency, taxable_amount: group.amount, percentage: fee.percentage, fee_amount: fee.feeAmount, tax_rate: 21, tax_amount: taxAmount, total_amount: fee.feeAmount + taxAmount, status: "PENDING", calculated_at: new Date().toISOString() };
+      const { error: feeError } = await supabaseAdmin.from("marketplace_service_fees").insert([{ ...baseFee, payer_type: "SUPPLIER" }, { ...baseFee, payer_type: "TENANT" }]);
+      if (feeError) throw feeError;
+    }
+    const awardedSubmissionIds = new Set((awardedLines || []).map((line:any)=>(line.marketplace_submissions as any)?.supplier_id).filter(Boolean));
+    const { data: tenderSubmissions } = await supabaseAdmin.from("marketplace_submissions").select("id,supplier_id").eq("tender_id", req.params.id);
+    for (const submission of tenderSubmissions || []) {
+      const awarded = awardedSubmissionIds.has(submission.supplier_id);
+      await supabaseAdmin.from("marketplace_submissions").update({ status: awarded ? "PARTIALLY_AWARDED" : "NOT_AWARDED" }).eq("id", submission.id);
+      const { data: members } = await supabaseAdmin.from("supplier_members").select("user_id").eq("supplier_id", submission.supplier_id).eq("active", true);
+      if (members?.length) await supabaseAdmin.from("marketplace_notifications").insert(members.map(member => ({ user_id: member.user_id, notification_type: awarded ? "TENDER_AWARDED" : "TENDER_NOT_AWARDED", title: awarded ? "Fue adjudicado en una licitación" : "Licitación resuelta", message: awarded ? "Revise los renglones adjudicados" : "Su oferta no fue seleccionada", entity_type: "TENDER", entity_id: req.params.id })));
     }
     await supabaseAdmin.from("marketplace_tenders").update({ status: "AWARDED" }).eq("id", req.params.id);
     res.json({ awardedLines: awards.length });

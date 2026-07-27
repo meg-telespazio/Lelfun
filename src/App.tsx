@@ -37,6 +37,7 @@ import ConsortiumPanel from "./components/ConsortiumPanel.js";
 import MarketplacePanel from "./components/MarketplacePanel.js";
 import TenantProfilePanel from "./components/TenantProfilePanel.js";
 import SuperAdminPanel from "./components/SuperAdminPanel.js";
+import PublicMarketplace from "./components/PublicMarketplace.js";
 
 // Import Landing, Login and SignUp
 import LandingAndAuth from "./components/LandingAndAuth.js";
@@ -84,7 +85,7 @@ const TENANT_PROFILES = [
 ];
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'landing' | 'login' | 'register' | 'app' | 'superadmin'>('landing');
+  const [currentView, setCurrentView] = useState<'landing' | 'login' | 'register' | 'app' | 'superadmin' | 'marketplace-public'>('landing');
   const [sessionUser, setSessionUser] = useState<{ email: string; name: string; role: string; tenantId: string; isMarketplaceSupplier?: boolean; modules?: string[] } | null>(null);
   
   const [activeTenantId, setActiveTenantId] = useState("tenant-lelfun");
@@ -695,9 +696,19 @@ export default function App() {
     return <SuperAdminPanel onLogout={handleLogout} />;
   }
 
+  if (currentView === "marketplace-public") {
+    return <PublicMarketplace authenticated={Boolean(sessionUser)} projects={projects} onBack={() => setCurrentView(sessionUser ? "app" : "landing")} onLogin={() => setCurrentView("login")} onRegister={() => setCurrentView("register")} onOpenPortal={() => {
+      if (!sessionUser) { setCurrentView("login"); return; }
+      setActiveTab("marketplace");
+      setMarketplaceSection(sessionUser.isMarketplaceSupplier ? "supplier" : "catalog");
+      setCurrentView("app");
+    }} />;
+  }
+
   if (currentView !== "app") {
     return (
       <LandingAndAuth 
+        onOpenMarketplace={() => setCurrentView("marketplace-public")}
         onLoginSuccess={async (email, _tenantId, userName, _isSupplier) => {
           const { data: sessionData } = await supabase.auth.getSession();
           const token = sessionData.session?.access_token;
@@ -727,7 +738,8 @@ export default function App() {
             alert("La licencia del tenant está suspendida o vencida. Contacte al administrador de Lelfun.");
             return;
           }
-          const modules = isSupplier ? ["marketplace"] : ["owner", "admin"].includes(access.tenant.role)
+          const marketplaceBuyer = access.license?.subscription_plans?.code === "MARKETPLACE_BUYER";
+          const modules = isSupplier || marketplaceBuyer ? ["marketplace"] : access.tenant.role === "purchasing_manager" ? ["marketplace"] : ["owner", "admin"].includes(access.tenant.role)
             ? ["projects", "treasury", "budgets", "procurement", "sales", "consortium", "ocr", "marketplace", "tenant_settings"]
             : (access.tenant.tenant_member_modules || []).filter((module: any) => module.can_read).map((module: any) => module.module_key);
           setActiveTenantId(tenantId);
@@ -740,16 +752,16 @@ export default function App() {
             modules
           });
           
-          if (isSupplier) {
+          if (isSupplier || marketplaceBuyer) {
             setActiveTab("marketplace");
-            setMarketplaceSection("supplier");
+            setMarketplaceSection(isSupplier ? "supplier" : "catalog");
           } else {
             const moduleToTab: Record<string, string> = { projects: "control-obra", treasury: "tesoreria-caja", budgets: "presupuestos", procurement: "compras", sales: "ventas", consortium: "consorcio", ocr: "ocr", marketplace: "marketplace", tenant_settings: "tenant-profile" };
             setActiveTab(moduleToTab[modules[0]] || "marketplace");
           }
           
           setCurrentView("app");
-          if (!isSupplier) fetchTenantState(tenantId);
+          if (!isSupplier && !marketplaceBuyer) fetchTenantState(tenantId);
         }}
         initialView={currentView === "landing" ? "landing" : (currentView === "login" ? "login" : "register")}
       />
@@ -935,7 +947,7 @@ export default function App() {
               Servicios Globales
             </span>
             <button
-              onClick={() => { setActiveTab("marketplace"); setMobileSidebarOpen(false); }}
+              onClick={() => { setCurrentView("marketplace-public"); setMobileSidebarOpen(false); }}
               className={`w-full flex items-center rounded-lg transition-all cursor-pointer p-2.5 text-xs font-semibold ${
                 sidebarPinned ? "gap-2.5" : "gap-0 md:group-hover:gap-2.5 justify-center md:group-hover:justify-start"
               } ${
