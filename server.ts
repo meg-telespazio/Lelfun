@@ -1103,10 +1103,33 @@ app.get("/api/tenants", (req: Request, res: Response) => {
 });
 
 // Create dynamic Tenant and seed initial accounts & cost categories
-app.post("/api/tenants", (req: Request, res: Response) => {
+app.post("/api/tenants", async (req: Request, res: Response) => {
   const tData = req.body;
   if (!tData.name) {
     return res.status(400).json({ error: "Falta el nombre de la empresa" });
+  }
+
+  // Production registrations must be persisted in Supabase. Vercel's local
+  // filesystem is ephemeral and cannot be used as the source of truth.
+  if (supabaseAdmin) {
+    const user = await getRequestAuthUser(req);
+    if (!user) return res.status(401).json({ error: "Debe confirmar el correo antes de crear la empresa" });
+    try {
+      const membership = await provisionTenantForUser(user, {
+        name: String(tData.nombreFantasia || tData.name || "").trim(),
+        legalName: String(tData.razonSocial || tData.name || "").trim(),
+        taxId: String(tData.cuit || "").trim(),
+        phone: String(tData.phone || "").trim(),
+        legalAddress: String(tData.legalAddress || "").trim(),
+        commercialAddress: String(tData.commercialAddress || tData.legalAddress || "").trim(),
+        companyType: String(tData.companyType || "Constructora").trim(),
+        defaultCurrency: String(tData.defaultCurrency || "ARS").trim(),
+        planCode: String(tData.planCode || "STARTER").trim().toUpperCase()
+      });
+      return res.status(201).json({ tenantId: membership.tenant_id, environment: "TENANT" });
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : "No se pudo crear la empresa" });
+    }
   }
 
   const newTenantId = tData.id || `tenant-${Date.now()}`;
@@ -1247,6 +1270,119 @@ async function getRequestAuthUser(req: Request) {
   return data.user;
 }
 
+type TenantRegistration = {
+  name: string;
+  legalName: string;
+  taxId: string;
+  phone?: string;
+  legalAddress?: string;
+  commercialAddress?: string;
+  companyType?: string;
+  defaultCurrency?: string;
+  planCode?: string;
+};
+
+async function provisionTenantForUser(user: any, registration: TenantRegistration) {
+  if (!supabaseAdmin) throw new Error("Supabase no estÃ¡ configurado");
+  const { data: currentMembership, error: membershipLookupError } = await supabaseAdmin
+    .from("tenant_members")
+    .select("tenant_id,user_id,role,active")
+    .eq("user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+  if (membershipLookupError) throw membershipLookupError;
+  if (currentMembership) return currentMembership;
+
+  if (!registration.name || !registration.legalName || !registration.taxId) {
+    throw new Error("Complete nombre, razÃ³n social y CUIT");
+  }
+
+  const planCode = registration.planCode || "STARTER";
+  const { data: plan, error: planError } = await supabaseAdmin
+    .from("subscription_plans")
+    .select("id")
+    .eq("code", planCode)
+    .eq("active", true)
+    .single();
+  if (planError || !plan) throw new Error(`El plan ${planCode} no estÃ¡ disponible`);
+
+  const { data: tenantWithTaxId, error: taxLookupError } = await supabaseAdmin
+    .from("tenants")
+    .select("id,created_by")
+    .eq("tax_id", registration.taxId)
+    .maybeSingle();
+  if (taxLookupError) throw taxLookupError;
+  if (tenantWithTaxId && tenantWithTaxId.created_by !== user.id) {
+    throw new Error("Ya existe una empresa registrada con ese CUIT");
+  }
+
+  let tenantId = tenantWithTaxId?.id || null;
+  let createdTenant = false;
+  try {
+    if (!tenantId) {
+      const { data: tenant, error: tenantError } = await supabaseAdmin
+        .from("tenants")
+        .insert({
+          name: registration.name,
+          legal_name: registration.legalName,
+          tax_id: registration.taxId,
+          default_currency: registration.defaultCurrency || "ARS",
+          phone: registration.phone || null,
+          legal_address: registration.legalAddress || null,
+          commercial_address: registration.commercialAddress || registration.legalAddress || null,
+          company_type: registration.companyType || "Constructora",
+          created_by: user.id
+        })
+        .select("id")
+        .single();
+      if (tenantError) throw tenantError;
+      tenantId = tenant.id;
+      createdTenant = true;
+    }
+
+    let { data: membership, error: memberLookupError } = await supabaseAdmin
+      .from("tenant_members")
+      .select("tenant_id,user_id,role,active")
+      .eq("tenant_id", tenantId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (memberLookupError) throw memberLookupError;
+    if (!membership) {
+      const memberResult = await supabaseAdmin
+        .from("tenant_members")
+        .insert({ tenant_id: tenantId, user_id: user.id, role: "owner", active: true })
+        .select("tenant_id,user_id,role,active")
+        .single();
+      if (memberResult.error) throw memberResult.error;
+      membership = memberResult.data;
+    }
+
+    const { data: license, error: licenseLookupError } = await supabaseAdmin
+      .from("tenant_licenses")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .maybeSingle();
+    if (licenseLookupError) throw licenseLookupError;
+    if (!license) {
+      const startsAt = new Date();
+      const nextDueDate = new Date(startsAt);
+      nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+      const { error: licenseError } = await supabaseAdmin.from("tenant_licenses").insert({
+        tenant_id: tenantId,
+        plan_id: plan.id,
+        status: "ACTIVE",
+        starts_at: startsAt.toISOString().slice(0, 10),
+        next_due_date: nextDueDate.toISOString().slice(0, 10)
+      });
+      if (licenseError) throw licenseError;
+    }
+    return membership;
+  } catch (error) {
+    if (createdTenant && tenantId) await supabaseAdmin.from("tenants").delete().eq("id", tenantId);
+    throw error;
+  }
+}
+
 app.get("/api/auth/access-context", async (req: Request, res: Response) => {
   if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
   const user = await getRequestAuthUser(req);
@@ -1258,13 +1394,32 @@ app.get("/api/auth/access-context", async (req: Request, res: Response) => {
   ]);
   if (adminResult.data) return res.json({ environment: "SUPERADMIN", userId: user.id, email: user.email });
   if (supplierResult.data) return res.json({ environment: "SUPPLIER", userId: user.id, email: user.email, supplier: supplierResult.data });
-  if (tenantResult.data) {
-    const { data: license } = await supabaseAdmin.from("tenant_licenses").select("*,subscription_plans(*)").eq("tenant_id", tenantResult.data.tenant_id).maybeSingle();
+  let tenantMembership: any = tenantResult.data;
+  if (!tenantMembership && user.user_metadata?.user_type === "tenant") {
+    try {
+      tenantMembership = await provisionTenantForUser(user, {
+        name: String(user.user_metadata.tenant_name || "").trim(),
+        legalName: String(user.user_metadata.tenant_legal_name || "").trim(),
+        taxId: String(user.user_metadata.tenant_tax_id || "").trim(),
+        phone: String(user.user_metadata.tenant_phone || user.user_metadata.telefono || "").trim(),
+        legalAddress: String(user.user_metadata.tenant_legal_address || "").trim(),
+        commercialAddress: String(user.user_metadata.tenant_legal_address || "").trim(),
+        companyType: "Constructora",
+        defaultCurrency: "ARS",
+        planCode: String(user.user_metadata.tenant_plan || "STARTER").toUpperCase()
+      });
+    } catch (error) {
+      console.error("Could not complete tenant registration:", error);
+    }
+  }
+  if (tenantMembership) {
+    const { data: license } = await supabaseAdmin.from("tenant_licenses").select("*,subscription_plans(*)").eq("tenant_id", tenantMembership.tenant_id).maybeSingle();
     const blocked = !license || ["PAST_DUE", "SUSPENDED", "CANCELLED", "EXPIRED"].includes(license.status) || new Date(license.next_due_date) < new Date(new Date().toISOString().slice(0, 10));
     if (blocked && license?.status === "ACTIVE") await supabaseAdmin.from("tenant_licenses").update({ status: "SUSPENDED", suspended_at: new Date().toISOString(), suspension_reason: "Licencia vencida" }).eq("id", license.id);
-    const databaseTenant = Array.isArray(tenantResult.data.tenants) ? tenantResult.data.tenants[0] : tenantResult.data.tenants;
+    const tenantDetailsResult = await supabaseAdmin.from("tenants").select("name,legal_name,tax_id,phone").eq("id", tenantMembership.tenant_id).single();
+    const databaseTenant = tenantDetailsResult.data;
     const localTenant = tenants.find(item => item.cuit && databaseTenant?.tax_id && item.cuit === databaseTenant.tax_id);
-    return res.json({ environment: "TENANT", userId: user.id, email: user.email, tenant: { ...tenantResult.data, local_tenant_id: localTenant?.id || tenantResult.data.tenant_id }, license: { ...license, blocked } });
+    return res.json({ environment: "TENANT", userId: user.id, email: user.email, tenant: { ...tenantMembership, tenants: databaseTenant, local_tenant_id: localTenant?.id || tenantMembership.tenant_id }, license: { ...license, blocked } });
   }
   return res.status(403).json({ error: "El usuario no tiene un entorno habilitado" });
 });
