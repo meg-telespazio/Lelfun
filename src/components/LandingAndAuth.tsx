@@ -227,6 +227,23 @@ export default function LandingAndAuth({
               telefono: regPhone,
               user_type:
                 registerType === "buyer" ? "marketplace_buyer" : registerType,
+              ...(registerType === "tenant"
+                ? {
+                    tenant_name: tenNombreFantasia || tenRazonSocial,
+                    tenant_legal_name: tenRazonSocial || tenNombreFantasia,
+                    tenant_tax_id: tenCuit,
+                    tenant_phone: regPhone,
+                    tenant_legal_address: [
+                      tenDireccion,
+                      tenCiudad,
+                      tenProvincia,
+                      tenPais,
+                    ]
+                      .filter(Boolean)
+                      .join(", "),
+                    tenant_plan: "STARTER",
+                  }
+                : {}),
             },
           },
         });
@@ -255,7 +272,12 @@ export default function LandingAndAuth({
         const fullLegalAddress = `${tenDireccion}, ${tenCiudad}, ${tenProvincia}, ${tenPais}`;
         const newTenantResponse = await fetch("/api/tenants", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(authToken
+              ? { Authorization: `Bearer ${authToken}` }
+              : {}),
+          },
           body: JSON.stringify({
             id: generatedTenantId,
             name: tenRazonSocial || tenNombreFantasia,
@@ -281,7 +303,7 @@ export default function LandingAndAuth({
           }),
         });
 
-        if (!newTenantResponse.ok) {
+        if (authToken && !newTenantResponse.ok) {
           throw new Error(
             "No se pudo registrar la estructura del tenant en el servidor.",
           );
