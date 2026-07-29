@@ -6,7 +6,6 @@
 import express, { Request, Response } from "express";
 import path from "path";
 import dotenv from "dotenv";
-import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
@@ -22,6 +21,7 @@ import {
   PurchaseStatus,
   Tenant,
   Project,
+  ProjectTask,
   FinancialAccount,
   Counterparty,
   CostCategory,
@@ -125,33 +125,12 @@ if (process.env.GEMINI_API_KEY) {
 // ---------------------------------------------------------
 
 // File-based persistence for dynamic tenants
-const CUSTOM_TENANTS_FILE = path.join(process.cwd(), "custom-tenants.json");
-
 function loadPersistedTenants(): Tenant[] {
-  try {
-    if (fs.existsSync(CUSTOM_TENANTS_FILE)) {
-      const data = fs.readFileSync(CUSTOM_TENANTS_FILE, "utf-8");
-      return JSON.parse(data);
-    }
-  } catch (e) {
-    console.error("Error loading persisted tenants:", e);
-  }
   return [];
 }
 
-function persistTenant(tenant: Tenant) {
-  try {
-    const list = loadPersistedTenants();
-    const index = list.findIndex(t => t.id === tenant.id);
-    if (index >= 0) {
-      list[index] = tenant;
-    } else {
-      list.push(tenant);
-    }
-    fs.writeFileSync(CUSTOM_TENANTS_FILE, JSON.stringify(list, null, 2), "utf-8");
-  } catch (e) {
-    console.error("Error saving persisted tenant:", e);
-  }
+function persistTenant(_tenant: Tenant) {
+  // Legacy development fallback. Production persistence is Supabase-only.
 }
 
 const tenants: Tenant[] = [
@@ -282,6 +261,17 @@ interface DailyOfficialExchangeRate {
 let officialExchangeRateHistory: DailyOfficialExchangeRate[] = [];
 
 async function getDailyOfficialRate(date = new Date().toISOString().split("T")[0]) {
+  if (supabaseAdmin) {
+    const { data: exact, error: exactError } = await supabaseAdmin.from("official_exchange_rates").select("*").eq("rate_date", date).maybeSingle();
+    if (exactError) throw exactError;
+    if (exact) return { date: exact.rate_date, currency: "USD" as const, buy: Number(exact.buy_rate), sell: Number(exact.sell_rate), updatedAt: exact.source_updated_at || exact.created_at, source: "dolarapi-oficial" as const };
+    const databaseToday = new Date().toISOString().split("T")[0];
+    if (date !== databaseToday) {
+      const { data: prior, error: priorError } = await supabaseAdmin.from("official_exchange_rates").select("*").lte("rate_date", date).order("rate_date", { ascending: false }).limit(1).maybeSingle();
+      if (priorError) throw priorError;
+      if (prior) return { date: prior.rate_date, currency: "USD" as const, buy: Number(prior.buy_rate), sell: Number(prior.sell_rate), updatedAt: prior.source_updated_at || prior.created_at, source: "dolarapi-oficial" as const };
+    }
+  }
   const stored = officialExchangeRateHistory.find(rate => rate.date === date);
   if (stored) return stored;
 
@@ -312,7 +302,10 @@ async function getDailyOfficialRate(date = new Date().toISOString().split("T")[0
   officialExchangeRateHistory = officialExchangeRateHistory.filter(rate => rate.date !== today);
   officialExchangeRateHistory.push(snapshot);
   exchangeRates.ARS_USD_OFICIAL = snapshot.sell;
-  persistAppState();
+  if (supabaseAdmin) {
+    const { error } = await supabaseAdmin.from("official_exchange_rates").upsert({ rate_date: snapshot.date, currency: "USD", buy_rate: snapshot.buy, sell_rate: snapshot.sell, source: snapshot.source, source_updated_at: snapshot.updatedAt }, { onConflict: "rate_date" });
+    if (error) throw error;
+  }
   return snapshot;
 }
 
@@ -795,60 +788,13 @@ let budgetLines: BudgetLine[] = [
   ...createReferenceBudgetLines(projects.find(project => project.id === "proj-alvear")!)
 ];
 
-// Durable local persistence for operational data.
-// Supabase currently provides Auth only; these entities can be migrated when its tables exist.
-const APP_STATE_FILE = path.join(process.cwd(), "custom-app-state.json");
-
 function loadPersistedAppState() {
-  try {
-    if (!fs.existsSync(APP_STATE_FILE)) return;
-    const persisted = JSON.parse(fs.readFileSync(APP_STATE_FILE, "utf-8"));
-    if (Array.isArray(persisted.projects)) projects = persisted.projects;
-    if (Array.isArray(persisted.budgetLines)) budgetLines = persisted.budgetLines;
-    if (Array.isArray(persisted.costCategories)) costCategories = persisted.costCategories;
-    if (Array.isArray(persisted.purchaseRequests)) purchaseRequests = persisted.purchaseRequests;
-    if (Array.isArray(persisted.movements)) movements = persisted.movements;
-    if (Array.isArray(persisted.accounts)) accounts = persisted.accounts;
-    if (Array.isArray(persisted.cashCounts)) cashCounts = persisted.cashCounts;
-    if (Array.isArray(persisted.officialExchangeRateHistory)) {
-      officialExchangeRateHistory = persisted.officialExchangeRateHistory;
-    }
-    if (Array.isArray(persisted.sellableUnits)) sellableUnits = persisted.sellableUnits;
-    if (Array.isArray(persisted.salesOpportunities)) salesOpportunities = persisted.salesOpportunities;
-    if (Array.isArray(persisted.salesContracts)) salesContracts = persisted.salesContracts;
-    if (Array.isArray(persisted.installments)) installments = persisted.installments;
-  } catch (error) {
-    console.error("Error loading persisted application state:", error);
-  }
+  // Legacy development seed data remains in memory only. Supabase is the
+  // exclusive persistence layer for authenticated application data.
 }
 
 function persistAppState() {
-  try {
-    const temporaryFile = `${APP_STATE_FILE}.tmp`;
-    fs.writeFileSync(
-      temporaryFile,
-      JSON.stringify({
-        version: 4,
-        projects,
-        budgetLines,
-        costCategories,
-        purchaseRequests,
-        movements,
-        accounts,
-        cashCounts,
-        officialExchangeRateHistory,
-        salesOpportunities,
-        sellableUnits,
-        salesContracts,
-        installments
-      }, null, 2),
-      "utf-8"
-    );
-    fs.renameSync(temporaryFile, APP_STATE_FILE);
-  } catch (error) {
-    console.error("Error saving persisted application state:", error);
-    throw error;
-  }
+  // Intentionally empty: local JSON persistence is forbidden in production.
 }
 
 let purchaseRequests: PurchaseRequest[] = [
@@ -1126,13 +1072,19 @@ let publicTenders: PublicTender[] = [
 // ---------------------------------------------------------
 
 // 1. Get List of Tenants
-app.get("/api/tenants", (req: Request, res: Response) => {
-  res.json(tenants);
+app.get("/api/tenants", async (req: Request, res: Response) => {
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (!tenantId) return res.status(403).json({ error: "Tenant no habilitado" });
+  const { data, error } = await supabaseAdmin.from("tenants").select("*").eq("id", tenantId);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data || []);
 });
 
 // Create dynamic Tenant and seed initial accounts & cost categories
 app.post("/api/tenants", async (req: Request, res: Response) => {
   const tData = req.body;
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
   if (!tData.name) {
     return res.status(400).json({ error: "Falta el nombre de la empresa" });
   }
@@ -1237,6 +1189,7 @@ app.post("/api/tenants", async (req: Request, res: Response) => {
 // Create dynamic marketplace supplier
 app.post("/api/marketplace-suppliers", async (req: Request, res: Response) => {
   const sData = req.body;
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
   if (!sData.name) {
     return res.status(400).json({ error: "Falta el nombre de la empresa proveedora" });
   }
@@ -1458,7 +1411,7 @@ app.get("/api/auth/access-context", async (req: Request, res: Response) => {
       commercialAddress: databaseTenant.commercial_address,
       companyType: databaseTenant.company_type,
       defaultCurrency: databaseTenant.default_currency,
-      logoUrl: databaseTenant.logo_url,
+      logoUrl: databaseTenant.logo_url ? `/api/tenants/${databaseTenant.id}/logo` : "",
       activeUsers: [{
         name: user.user_metadata?.nombre || user.email,
         email: user.email,
@@ -2143,7 +2096,7 @@ app.put("/api/marketplace/v2/products/:id", async (req: Request, res: Response) 
     payment_methods: req.body.paymentMethods || [],
     delivery_methods: req.body.deliveryMethods || []
   };
-  const { data, error } = await supabaseAdmin.from("marketplace_products").update(allowedFields).eq("id", req.params.id).eq("supplier_id", supplier.id).select().single();
+  const { data, error } = await supabaseAdmin.from("marketplace_products").update(allowedFields).eq("id", req.params.id).eq("supplier_id", supplierMember.supplier_id).select().single();
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
@@ -2218,8 +2171,10 @@ app.post("/api/marketplace/v2/direct-requests", async (req: Request, res: Respon
 
 app.put("/api/marketplace/v2/direct-requests/:id/respond", async (req: Request, res: Response) => {
   if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
-  const supplier = await getSupplierForEmail(req.body.email);
-  if (!supplier) return res.status(403).json({ error: "Acceso denegado" });
+  const authUser = await getRequestAuthUser(req);
+  if (!authUser) return res.status(401).json({ error: "Sesión requerida" });
+  const { data: supplierMember } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", authUser.id).eq("active", true).single();
+  if (!supplierMember) return res.status(403).json({ error: "Acceso denegado" });
   if (!["ACCEPTED", "REJECTED", "CHANGES_PROPOSED"].includes(req.body.status)) return res.status(400).json({ error: "Respuesta inválida" });
   const proposedItems = Array.isArray(req.body.items) ? req.body.items : [];
   if (req.body.status === "CHANGES_PROPOSED" && !String(req.body.response || "").trim() && !proposedItems.length) return res.status(400).json({ error: "Debe detallar la contrapropuesta" });
@@ -2486,7 +2441,15 @@ app.post("/api/marketplace/v2/tenders/:id/award", async (req: Request, res: Resp
 });
 
 // 1.5. Detect connected user and assign active tenant based on connection headers
-app.get("/api/me", (req: Request, res: Response) => {
+app.get("/api/me", async (req: Request, res: Response) => {
+  if (supabaseAdmin) {
+    const user = await getRequestAuthUser(req);
+    if (!user) return res.status(401).json({ error: "Sesión inválida" });
+    const { data: membership } = await supabaseAdmin.from("tenant_members").select("tenant_id,role,tenants(name,tax_id,default_currency)").eq("user_id", user.id).eq("active", true).maybeSingle();
+    if (!membership) return res.status(403).json({ error: "El usuario no tiene un entorno habilitado" });
+    const tenant: any = Array.isArray(membership.tenants) ? membership.tenants[0] : membership.tenants;
+    return res.json({ email: user.email, tenantId: membership.tenant_id, tenantName: tenant?.name, cuit: tenant?.tax_id, defaultCurrency: tenant?.default_currency, role: membership.role, name: user.user_metadata?.nombre || user.email?.split("@")[0] });
+  }
   let email = "";
   
   // Prioritize user_email query param or header so custom login sessions work correctly in preview/dev environment
@@ -2555,11 +2518,17 @@ app.get("/api/me", (req: Request, res: Response) => {
 });
 
 // 2. Get Global Exchange Rates
-app.get("/api/exchange-rates", (req: Request, res: Response) => {
-  res.json(exchangeRates);
+app.get("/api/exchange-rates", async (req: Request, res: Response) => {
+  try { res.json(await getDailyOfficialRate()); }
+  catch (error) { res.status(503).json({ error: error instanceof Error ? error.message : "No se pudo obtener el tipo de cambio" }); }
 });
 
-app.get("/api/exchange-rates/history", (req: Request, res: Response) => {
+app.get("/api/exchange-rates/history", async (req: Request, res: Response) => {
+  if (supabaseAdmin) {
+    const { data, error } = await supabaseAdmin.from("official_exchange_rates").select("*").order("rate_date", { ascending: false });
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json((data || []).map(rate => ({ date: rate.rate_date, currency: rate.currency, buy: Number(rate.buy_rate), sell: Number(rate.sell_rate), updatedAt: rate.source_updated_at || rate.created_at, source: rate.source })));
+  }
   res.json(
     [...officialExchangeRateHistory].sort((a, b) => b.date.localeCompare(a.date))
   );
@@ -2584,21 +2553,57 @@ app.get("/api/state", async (req: Request, res: Response) => {
     tenantProjects = (databaseProjects || []).map(mapDatabaseProject);
   }
   const tenantProjectIds = tenantProjects.map(p => p.id);
+  if (supabaseAdmin && tenantProjectIds.length > 0) {
+    const [taskResult, certificationResult] = await Promise.all([
+      supabaseAdmin.from("project_tasks").select("*").in("project_id", tenantProjectIds).order("sort_order"),
+      supabaseAdmin.from("project_certifications").select("*").in("project_id", tenantProjectIds).order("certification_date", { ascending: false })
+    ]);
+    if (taskResult.error || certificationResult.error) return res.status(500).json({ error: (taskResult.error || certificationResult.error)?.message });
+    tenantProjects.forEach(project => {
+      project.schedule = (taskResult.data || []).filter(task => task.project_id === project.id).map(task => ({ id: task.id, taskName: task.name, startWeek: task.start_week, endWeek: task.end_week, progress: Number(task.progress) }));
+      project.certifications = (certificationResult.data || []).filter(cert => cert.project_id === project.id).map(cert => ({ id: cert.id, projectId: cert.project_id, date: cert.certification_date, physicalProgress: Number(cert.physical_progress), financialProgress: Number(cert.financial_progress), certifiedBy: cert.certified_by, notes: cert.notes }));
+    });
+  }
 
-  const tenantAccounts = accounts.filter(a => a.tenantId === tenantId);
-  const tenantCounterparties = counterparties.filter(c => c.tenantId === tenantId);
+  let tenantAccounts = accounts.filter(a => a.tenantId === tenantId);
+  let tenantCounterparties = counterparties.filter(c => c.tenantId === tenantId);
   let tenantCategories = costCategories.filter(c => c.tenantId === tenantId);
+  let tenantDeposits: { id: string; name: string; address: string }[] = [];
+  if (supabaseAdmin) {
+    const [accountResult, counterpartyResult, categoryResult, depositResult] = await Promise.all([
+      supabaseAdmin.from("financial_accounts").select("*").eq("tenant_id", tenantId).order("created_at"),
+      supabaseAdmin.from("counterparties").select("*").eq("tenant_id", tenantId).order("name"),
+      supabaseAdmin.from("cost_categories").select("*").eq("tenant_id", tenantId).order("code"),
+      supabaseAdmin.from("tenant_deposits").select("id,name,address").eq("tenant_id", tenantId).order("created_at")
+    ]);
+    const firstError = [accountResult, counterpartyResult, categoryResult, depositResult].find(result => result.error)?.error;
+    if (firstError) return res.status(500).json({ error: firstError.message });
+    tenantAccounts = (accountResult.data || []).map((account: any) => ({ id: account.id, tenantId: account.tenant_id, name: account.name, type: account.account_type, currency: account.currency, balance: Number(account.balance), responsibleName: account.responsible_name, responsibleEmail: account.responsible_email, responsiblePhone: account.responsible_phone }));
+    tenantCounterparties = (counterpartyResult.data || []).map((item: any) => ({ id: item.id, tenantId: item.tenant_id, name: item.name, type: item.counterparty_type, taxId: item.tax_id, contactName: item.contact_name, email: item.email, phone: item.phone }));
+    tenantCategories = (categoryResult.data || []).map((category: any) => ({ id: category.id, tenantId: category.tenant_id, parentId: category.parent_id || undefined, code: category.code, name: category.name, isLeaf: category.is_leaf }));
+    tenantDeposits = depositResult.data || [];
+  }
   
   // Filter movements belonging directly to tenant accounts
   const tenantAccountIds = tenantAccounts.map(a => a.id);
-  const tenantMovements = movements.filter(m => tenantAccountIds.includes(m.accountId));
-  const tenantCashCounts = cashCounts.filter(cc => tenantAccountIds.includes(cc.accountId));
+  let tenantMovements = movements.filter(m => tenantAccountIds.includes(m.accountId));
+  let tenantCashCounts = cashCounts.filter(cc => tenantAccountIds.includes(cc.accountId));
+  if (supabaseAdmin) {
+    const [movementResult, countResult] = await Promise.all([
+      supabaseAdmin.from("financial_movements").select("*").eq("tenant_id", tenantId).order("movement_date", { ascending: false }),
+      supabaseAdmin.from("cash_counts").select("*").eq("tenant_id", tenantId).order("count_date", { ascending: false })
+    ]);
+    const financeError = movementResult.error || countResult.error;
+    if (financeError) return res.status(500).json({ error: financeError.message });
+    tenantMovements = (movementResult.data || []).map((item: any) => ({ id: item.id, tenantId: item.tenant_id, projectId: item.project_id, accountId: item.account_id, targetAccountId: item.target_account_id, counterpartyId: item.counterparty_id, categoryId: item.category_id, purchaseRequestId: item.purchase_request_id, amount: Number(item.amount), currency: item.currency, baseAmount: Number(item.consolidation_amount), exchangeRate: Number(item.exchange_rate), exchangeRateDate: item.exchange_rate_date, type: item.movement_type, description: item.description, status: item.status, date: item.movement_date, performedBy: item.performed_by, approvedBy: item.approved_by }));
+    tenantCashCounts = (countResult.data || []).map((item: any) => ({ id: item.id, tenantId: item.tenant_id, projectId: item.project_id, accountId: item.account_id, countDate: item.count_date, systemBalance: Number(item.system_balance), physicalBalance: Number(item.physical_balance), difference: Number(item.difference), currency: item.currency, status: item.status, performedBy: item.performed_by, approvedBy: item.approved_by, notes: item.notes }));
+  }
 
   let tenantBudgetLines = budgetLines.filter(bl => tenantProjectIds.includes(bl.projectId));
   if (supabaseAdmin && tenantProjectIds.length > 0) {
     const { data: databaseBudgetLines, error: budgetLinesError } = await supabaseAdmin
       .from("budget_lines")
-      .select("*")
+      .select("*,budget_subitems(*)")
       .in("project_id", tenantProjectIds)
       .order("sort_order", { ascending: true });
     if (budgetLinesError) return res.status(500).json({ error: budgetLinesError.message });
@@ -2611,7 +2616,7 @@ app.get("/api/state", async (req: Request, res: Response) => {
       amount: Number(line.amount || 0),
       incidence: Number(line.incidence || 0),
       notes: line.notes || "",
-      subitems: []
+      subitems: (line.budget_subitems || []).sort((a: any, b: any) => a.sort_order - b.sort_order).map((item: any) => ({ id: item.id, description: item.description, amount: Number(item.amount), notes: item.notes || undefined }))
     }));
   }
   if (tenantCategories.length === 0 && tenantBudgetLines.length > 0) {
@@ -2631,8 +2636,13 @@ app.get("/api/state", async (req: Request, res: Response) => {
     // Categories derived from persisted budget lines are response-only. Do not
     // write server-local JSON from a Vercel function.
   }
-  const tenantPurchaseRequests = purchaseRequests.filter(pr => pr.tenantId === tenantId);
-  const tenantUnits = sellableUnits.filter(u => tenantProjectIds.includes(u.projectId));
+  let tenantPurchaseRequests = purchaseRequests.filter(pr => pr.tenantId === tenantId);
+  if (supabaseAdmin) {
+    const { data: requests, error: requestError } = await supabaseAdmin.from("purchase_requests").select("*,purchase_items(*)").eq("tenant_id", tenantId).order("created_at", { ascending: false });
+    if (requestError) return res.status(500).json({ error: requestError.message });
+    tenantPurchaseRequests = (requests || []).map((request: any) => ({ id: request.id, tenantId: request.tenant_id, projectId: request.project_id, categoryId: request.category_id, code: request.code, title: request.title, status: request.status, requestedBy: request.requested_by, requiredDate: request.required_date, estimatedTotal: Number(request.estimated_total), currency: request.currency, items: (request.purchase_items || []).map((item: any) => ({ id: item.id, description: item.description, quantity: Number(item.quantity), unit: item.unit, estimatedPrice: Number(item.estimated_price), actualPrice: item.actual_price === null ? undefined : Number(item.actual_price), supplierId: item.supplier_id, receivedQuantity: Number(item.received_quantity) })) }));
+  }
+  let tenantUnits = sellableUnits.filter(u => tenantProjectIds.includes(u.projectId));
   const now = new Date();
   salesOpportunities.forEach(opportunity => {
     if (
@@ -2649,18 +2659,64 @@ app.get("/api/state", async (req: Request, res: Response) => {
       });
     }
   });
-  const tenantOpportunities = salesOpportunities.filter(opportunity => opportunity.tenantId === tenantId);
+  let tenantOpportunities = salesOpportunities.filter(opportunity => opportunity.tenantId === tenantId);
   
-  const tenantContractIds = salesContracts.filter(sc => sc.tenantId === tenantId).map(c => c.id);
-  const tenantContracts = salesContracts.filter(sc => sc.tenantId === tenantId);
-  const tenantInstallments = installments.filter(inst => tenantContractIds.includes(inst.contractId));
+  let tenantContractIds = salesContracts.filter(sc => sc.tenantId === tenantId).map(c => c.id);
+  let tenantContracts = salesContracts.filter(sc => sc.tenantId === tenantId);
+  let tenantInstallments = installments.filter(inst => tenantContractIds.includes(inst.contractId));
+  if (supabaseAdmin) {
+    const expiredResult = await supabaseAdmin.from("sales_opportunities").select("id").eq("tenant_id", tenantId).eq("stage", "RESERVED").lt("reservation_expires_at", new Date().toISOString());
+    const expiredIds = (expiredResult.data || []).map(item => item.id);
+    if (expiredIds.length) {
+      const { data: expiredLinks } = await supabaseAdmin.from("sales_opportunity_units").select("unit_id").in("opportunity_id", expiredIds);
+      await supabaseAdmin.from("sales_opportunities").update({ stage: "EXPIRED" }).in("id", expiredIds);
+      if (expiredLinks?.length) await supabaseAdmin.from("sellable_units").update({ status: "AVAILABLE" }).in("id", expiredLinks.map(item => item.unit_id)).eq("status", "RESERVED");
+    }
+    const [unitResult, opportunityResult, contractResult] = await Promise.all([
+      tenantProjectIds.length ? supabaseAdmin.from("sellable_units").select("*").in("project_id", tenantProjectIds).order("created_at") : Promise.resolve({ data: [], error: null }),
+      supabaseAdmin.from("sales_opportunities").select("*,sales_opportunity_units(*)").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+      supabaseAdmin.from("sales_contracts").select("*,sales_contract_units(*)").eq("tenant_id", tenantId).order("contract_date", { ascending: false })
+    ]);
+    const salesError = unitResult.error || opportunityResult.error || contractResult.error;
+    if (salesError) return res.status(500).json({ error: salesError.message });
+    tenantUnits = (unitResult.data || []).map((unit: any) => ({ id: unit.id, projectId: unit.project_id, name: unit.name, type: unit.unit_type, status: unit.status, surfaceM2: Number(unit.total_surface_m2), coveredSurfaceM2: Number(unit.covered_surface_m2), semiCoveredSurfaceM2: Number(unit.semi_covered_surface_m2), uncoveredSurfaceM2: Number(unit.uncovered_surface_m2), description: unit.description, view: unit.view_description, orientation: unit.orientation, floor: unit.floor, rooms: unit.rooms, bedrooms: unit.bedrooms, bathrooms: unit.bathrooms, imageUrls: [], financingDescription: unit.financing_description, price: Number(unit.base_price), currency: unit.currency, currentOwnerId: unit.current_owner_id }));
+    tenantOpportunities = (opportunityResult.data || []).map((opp: any) => ({ id: opp.id, tenantId: opp.tenant_id, projectId: opp.project_id, customerId: opp.customer_id, unitIds: (opp.sales_opportunity_units || []).map((link: any) => link.unit_id), title: opp.title, stage: opp.stage, createdAt: opp.created_at, updatedAt: opp.updated_at, reservationExpiresAt: opp.reservation_expires_at, basePrice: Number(opp.base_price), negotiatedPrice: Number(opp.negotiated_price), currency: opp.currency, discountAmount: Number(opp.discount_amount), downPayment: Number(opp.down_payment), cashPayment: Number(opp.cash_payment), installmentCount: opp.installment_count, installmentAmount: Number(opp.installment_amount), reinforcements: Number(opp.reinforcements_amount), possessionBalance: Number(opp.possession_balance), financingRate: Number(opp.financing_rate), indexType: opp.index_type, baseIndexValue: Number(opp.base_index_value), commissionType: opp.commission_type, commissionValue: Number(opp.commission_value), sellerName: opp.seller_name, nextAction: opp.next_action, nextActionDate: opp.next_action_date, notes: opp.notes, lossReason: opp.loss_reason, documentUrls: [] }));
+    tenantContracts = (contractResult.data || []).map((contract: any) => ({ id: contract.id, tenantId: contract.tenant_id, projectId: contract.project_id, unitId: contract.sales_contract_units?.[0]?.unit_id, unitIds: (contract.sales_contract_units || []).map((link: any) => link.unit_id), opportunityId: contract.opportunity_id, customerId: contract.customer_id, contractDate: contract.contract_date, totalPrice: Number(contract.total_price), currency: contract.currency, downPayment: Number(contract.down_payment), installmentCount: contract.installment_count, indexType: contract.index_type, baseIndexValue: Number(contract.base_index_value), status: contract.status, cashPayment: Number(contract.cash_payment), reinforcements: Number(contract.reinforcements_amount), possessionBalance: Number(contract.possession_balance), financingRate: Number(contract.financing_rate), commissionType: contract.commission_type, commissionValue: Number(contract.commission_value) }));
+    tenantContractIds = tenantContracts.map(contract => contract.id);
+    const installmentResult = tenantContractIds.length ? await supabaseAdmin.from("sales_installments").select("*").in("contract_id", tenantContractIds).order("due_date") : { data: [], error: null };
+    if (installmentResult.error) return res.status(500).json({ error: installmentResult.error.message });
+    tenantInstallments = (installmentResult.data || []).map((inst: any) => ({ id: inst.id, contractId: inst.contract_id, installmentNumber: inst.installment_number, originalAmount: Number(inst.original_amount), currency: inst.currency, dueDate: inst.due_date, indexType: inst.index_type, indexBaseValue: Number(inst.base_index_value), indexCurrentValue: Number(inst.current_index_value), adjustedAmount: Number(inst.adjusted_amount), paidAmount: Number(inst.paid_amount), status: inst.status }));
+  }
   
-  const tenantDocuments = ocrDocuments.filter(doc => doc.tenantId === tenantId);
-  const tenantCondos = earlyCondominiums.filter(cond => cond.tenantId === tenantId);
-  const tenantMaintenance = maintenanceRequests.filter(m => m.tenantId === tenantId);
+  let tenantDocuments = ocrDocuments.filter(doc => doc.tenantId === tenantId);
+  let tenantCondos = earlyCondominiums.filter(cond => cond.tenantId === tenantId);
+  let tenantMaintenance = maintenanceRequests.filter(m => m.tenantId === tenantId);
+  if (supabaseAdmin) {
+    const [documentResult, condoResult, maintenanceResult] = await Promise.all([
+      supabaseAdmin.from("ocr_documents").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+      supabaseAdmin.from("early_condominiums").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+      supabaseAdmin.from("maintenance_requests").select("*").eq("tenant_id", tenantId).order("reported_date", { ascending: false })
+    ]);
+    const serviceError = documentResult.error || condoResult.error || maintenanceResult.error;
+    if (serviceError) return res.status(500).json({ error: serviceError.message });
+    tenantDocuments = (documentResult.data || []).map((doc: any) => ({ id: doc.id, tenantId: doc.tenant_id, projectId: doc.project_id, fileName: doc.file_name, fileUrl: doc.file_url, date: doc.document_date, issuer: doc.issuer, documentNumber: doc.document_number, amount: doc.amount === null ? undefined : Number(doc.amount), taxAmount: doc.tax_amount === null ? undefined : Number(doc.tax_amount), currency: doc.currency, categoryId: doc.category_id, confidence: Number(doc.confidence), status: doc.status, rawText: doc.raw_text }));
+    tenantCondos = (condoResult.data || []).map((condo: any) => ({ id: condo.id, tenantId: condo.tenant_id, projectId: condo.project_id, name: condo.name, handoverDate: condo.handover_date, maintenanceMonths: condo.maintenance_months, units: condo.units || [] }));
+    tenantMaintenance = (maintenanceResult.data || []).map((request: any) => ({ id: request.id, tenantId: request.tenant_id, projectId: request.project_id, unitId: request.unit_id, customerId: request.customer_id, reporterName: request.reporter_name, reporterContact: request.reporter_contact, description: request.description, reportedDate: request.reported_date, status: request.status, warrantyCoverage: request.warranty_coverage, notes: request.notes }));
+  }
 
   // Global tenders where the active tenant is the creator, or all public tenders
-  const tenantTenders = publicTenders.filter(t => t.tenantId === tenantId);
+  let tenantTenders = publicTenders.filter(t => t.tenantId === tenantId);
+  if (supabaseAdmin) {
+    const { data: tenderRows, error: tenderError } = await supabaseAdmin.from("public_tenders").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false });
+    if (tenderError) return res.status(500).json({ error: tenderError.message });
+    tenantTenders = (tenderRows || []).map((tender: any) => ({ id: tender.id, tenantId: tender.tenant_id, projectId: tender.project_id, code: tender.code, title: tender.title, description: tender.description, deadline: tender.deadline, category: tender.category, status: tender.status, bids: tender.bids || [] }));
+  }
+  let tenantMarketplaceSuppliers = marketplaceSuppliers;
+  if (supabaseAdmin) {
+    const { data: supplierRows, error: supplierError } = await supabaseAdmin.from("supplier_organizations").select("*").in("approval_status", ["APPROVED", "PENDING"]).order("trade_name");
+    if (supplierError) return res.status(500).json({ error: supplierError.message });
+    tenantMarketplaceSuppliers = (supplierRows || []).map((supplier: any) => ({ id: supplier.id, name: supplier.trade_name || supplier.legal_name, categories: supplier.category_ids || [], serviceAreas: supplier.service_areas || [], rating: Number(supplier.rating || 0), reviewCount: supplier.review_count || 0, contactEmail: supplier.contact_email || "", verified: supplier.approval_status === "APPROVED", empresa: supplier.legal_name, cuit: supplier.tax_id, approvalStatus: supplier.approval_status }));
+  }
 
   let tenantProfile = tenants.find(t => t.id === tenantId) || null;
   if (supabaseAdmin) {
@@ -2670,6 +2726,13 @@ app.get("/api/state", async (req: Request, res: Response) => {
       .eq("id", tenantId)
       .maybeSingle();
     if (databaseTenant) {
+      const { data: memberRows } = await supabaseAdmin.from("tenant_members").select("user_id,role,active").eq("tenant_id", tenantId);
+      const authUsersResult = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      const authUsersById = new Map<string, any>(authUsersResult.data.users.map(user => [user.id, user] as [string, any]));
+      const activeUsers = (memberRows || []).map(member => {
+        const authUser = authUsersById.get(member.user_id);
+        return { name: authUser?.user_metadata?.nombre || authUser?.email || "Usuario", email: authUser?.email || "", role: member.role, active: member.active };
+      });
       tenantProfile = {
         id: databaseTenant.id,
         name: databaseTenant.name,
@@ -2681,9 +2744,10 @@ app.get("/api/state", async (req: Request, res: Response) => {
         commercialAddress: databaseTenant.commercial_address,
         companyType: databaseTenant.company_type,
         defaultCurrency: databaseTenant.default_currency,
-        logoUrl: databaseTenant.logo_url,
+        logoUrl: databaseTenant.logo_url ? `/api/tenants/${databaseTenant.id}/logo` : "",
         enabledCurrencies: [Currency.ARS, Currency.USD],
-        activeUsers: []
+        activeUsers,
+        deposits: tenantDeposits
       } as Tenant;
     }
   }
@@ -2720,7 +2784,7 @@ app.get("/api/state", async (req: Request, res: Response) => {
     earlyCondominiums: tenantCondos,
     maintenanceRequests: tenantMaintenance,
     tenders: tenantTenders,
-    marketplaceSuppliers, // Global catalog is public
+    marketplaceSuppliers: tenantMarketplaceSuppliers,
     tenantProfile,
     exchangeRates: {
       ARS_USD_OFICIAL: officialSellRate,
@@ -2736,9 +2800,20 @@ app.get("/api/state", async (req: Request, res: Response) => {
 });
 
 // 3.5. Tenant Profile updates, Deposits, Bank Accounts, and Active Users management
-app.put("/api/tenants/:id", (req: Request, res: Response) => {
+app.put("/api/tenants/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const data = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin) {
+    if (!authenticatedTenantId || authenticatedTenantId !== id) return res.status(403).json({ error: "Tenant inválido" });
+    const update: Record<string, unknown> = {};
+    for (const [clientKey, databaseKey] of Object.entries({ name: "name", nombreFantasia: "name", razonSocial: "legal_name", cuit: "tax_id", defaultCurrency: "default_currency", phone: "phone", legalAddress: "legal_address", commercialAddress: "commercial_address", companyType: "company_type" })) {
+      if (data[clientKey] !== undefined) update[databaseKey] = data[clientKey];
+    }
+    const { data: updated, error } = await supabaseAdmin.from("tenants").update(update).eq("id", id).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json({ id: updated.id, name: updated.name, nombreFantasia: updated.name, razonSocial: updated.legal_name, cuit: updated.tax_id, defaultCurrency: updated.default_currency, phone: updated.phone, legalAddress: updated.legal_address, commercialAddress: updated.commercial_address, companyType: updated.company_type, logoUrl: updated.logo_url ? `/api/tenants/${updated.id}/logo` : "" });
+  }
   const tenant = tenants.find(t => t.id === id);
   if (!tenant) {
     return res.status(404).json({ error: "Empresa no encontrada" });
@@ -2766,14 +2841,14 @@ app.put("/api/tenants/:id", (req: Request, res: Response) => {
 });
 
 app.get("/api/tenants/:id/logo", async (req: Request, res: Response) => {
-  const tenant = tenants.find(t => t.id === req.params.id);
-  if (!tenant?.logoStoragePath || !supabaseAdmin) {
-    return res.status(404).json({ error: "Logo no encontrado" });
-  }
+  if (!supabaseAdmin) return res.status(404).json({ error: "Logo no encontrado" });
+  const { data: tenant } = await supabaseAdmin.from("tenants").select("logo_url").eq("id", req.params.id).maybeSingle();
+  if (!tenant?.logo_url) return res.status(404).json({ error: "Logo no encontrado" });
+  if (/^https?:\/\//i.test(tenant.logo_url)) return res.redirect(tenant.logo_url);
 
   const { data, error } = await supabaseAdmin.storage
     .from("project-images")
-    .download(tenant.logoStoragePath);
+    .download(String(tenant.logo_url).replace(/^project-images\//, ""));
   if (error || !data) {
     return res.status(404).json({ error: "No se pudo obtener el logo" });
   }
@@ -2784,7 +2859,10 @@ app.get("/api/tenants/:id/logo", async (req: Request, res: Response) => {
 });
 
 app.post("/api/tenants/:id/logo", async (req: Request, res: Response) => {
-  const tenant = tenants.find(t => t.id === req.params.id);
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (!tenantId || tenantId !== req.params.id) return res.status(403).json({ error: "Tenant inválido" });
+  const tenantResult = supabaseAdmin ? await supabaseAdmin.from("tenants").select("id,logo_url").eq("id", tenantId).single() : null;
+  const tenant = tenantResult?.data;
   if (!tenant) return res.status(404).json({ error: "Empresa no encontrada" });
   if (!supabaseAdmin) {
     return res.status(503).json({ error: "Supabase Storage no está configurado en el servidor." });
@@ -2819,21 +2897,30 @@ app.post("/api/tenants/:id/logo", async (req: Request, res: Response) => {
     return res.status(500).json({ error: `No se pudo guardar el logo: ${error.message}` });
   }
 
-  const previousPath = tenant.logoStoragePath;
-  tenant.logoStoragePath = storagePath;
-  tenant.logoUrl = `/api/tenants/${tenant.id}/logo?v=${Date.now()}`;
-  if (tenant.id.startsWith("tenant-dyn-")) persistTenant(tenant);
+  const previousPath = tenant.logo_url && !/^https?:\/\//i.test(tenant.logo_url) ? tenant.logo_url : null;
+  const { error: updateError } = await supabaseAdmin.from("tenants").update({ logo_url: storagePath }).eq("id", tenant.id);
+  if (updateError) {
+    await supabaseAdmin.storage.from("project-images").remove([storagePath]);
+    return res.status(500).json({ error: updateError.message });
+  }
 
   if (previousPath) {
     await supabaseAdmin.storage.from("project-images").remove([previousPath]);
   }
 
-  res.json({ logoUrl: tenant.logoUrl });
+  res.json({ logoUrl: `/api/tenants/${tenant.id}/logo?v=${Date.now()}` });
 });
 
-app.post("/api/tenants/:id/deposits", (req: Request, res: Response) => {
+app.post("/api/tenants/:id/deposits", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { name, address } = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && name && address) {
+    if (!authenticatedTenantId || authenticatedTenantId !== id) return res.status(403).json({ error: "Tenant inválido" });
+    const { data: deposit, error } = await supabaseAdmin.from("tenant_deposits").insert({ tenant_id: id, name, address }).select("id,name,address").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json(deposit);
+  }
   if (!name || !address) {
     return res.status(400).json({ error: "Faltan datos del depósito" });
   }
@@ -2860,10 +2947,20 @@ app.post("/api/tenants/:id/deposits", (req: Request, res: Response) => {
   res.status(201).json(newDeposit);
 });
 
-app.post("/api/tenants/:id/accounts", (req: Request, res: Response) => {
+app.post("/api/tenants/:id/accounts", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { name, currency, type, balance, responsibleName, responsibleEmail, responsiblePhone } = req.body;
   const accountType = type || "Banco";
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin) {
+    if (!name || !currency) return res.status(400).json({ error: "Nombre y moneda requeridos" });
+    if (!["Banco", "Caja", "Caja Fuerte"].includes(accountType)) return res.status(400).json({ error: "Tipo de cuenta inválido" });
+    if (accountType !== "Banco" && (!responsibleName || !responsibleEmail || !responsiblePhone)) return res.status(400).json({ error: "Las cajas requieren responsable y teléfono" });
+    if (!authenticatedTenantId || authenticatedTenantId !== id) return res.status(403).json({ error: "Tenant inválido" });
+    const { data: account, error } = await supabaseAdmin.from("financial_accounts").insert({ tenant_id: id, name, account_type: accountType, currency, balance: Number(balance) || 0, responsible_name: responsibleName || null, responsible_email: responsibleEmail || null, responsible_phone: responsiblePhone || null }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json({ id: account.id, tenantId: account.tenant_id, name: account.name, type: account.account_type, currency: account.currency, balance: Number(account.balance), responsibleName: account.responsible_name, responsibleEmail: account.responsible_email, responsiblePhone: account.responsible_phone });
+  }
   if (!name || !currency) {
     return res.status(400).json({ error: "Nombre y moneda requeridos" });
   }
@@ -2896,10 +2993,20 @@ app.post("/api/tenants/:id/accounts", (req: Request, res: Response) => {
   res.status(201).json(newAccount);
 });
 
-app.put("/api/tenants/:tenantId/accounts/:accountId", (req: Request, res: Response) => {
+app.put("/api/tenants/:tenantId/accounts/:accountId", async (req: Request, res: Response) => {
   const { tenantId, accountId } = req.params;
   const { name, currency, balance, type, responsibleName, responsibleEmail, responsiblePhone } = req.body;
   const accountType = type || "Banco";
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin) {
+    if (!name || !currency || balance === undefined || Number.isNaN(Number(balance))) return res.status(400).json({ error: "Nombre, moneda y saldo válidos son requeridos" });
+    if (!["Banco", "Caja", "Caja Fuerte"].includes(accountType)) return res.status(400).json({ error: "Tipo de cuenta inválido" });
+    if (accountType !== "Banco" && (!responsibleName || !responsibleEmail || !responsiblePhone)) return res.status(400).json({ error: "Las cajas requieren responsable y teléfono" });
+    if (!authenticatedTenantId || authenticatedTenantId !== tenantId) return res.status(403).json({ error: "Tenant inválido" });
+    const { data: account, error } = await supabaseAdmin.from("financial_accounts").update({ name: String(name).trim(), account_type: accountType, currency, balance: Number(balance), responsible_name: responsibleName || null, responsible_email: responsibleEmail || null, responsible_phone: responsiblePhone || null }).eq("id", accountId).eq("tenant_id", tenantId).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json({ id: account.id, tenantId: account.tenant_id, name: account.name, type: account.account_type, currency: account.currency, balance: Number(account.balance), responsibleName: account.responsible_name, responsibleEmail: account.responsible_email, responsiblePhone: account.responsible_phone });
+  }
 
   if (!name || !currency || balance === undefined || Number.isNaN(Number(balance))) {
     return res.status(400).json({ error: "Nombre, moneda y saldo válidos son requeridos" });
@@ -2933,9 +3040,25 @@ app.put("/api/tenants/:tenantId/accounts/:accountId", (req: Request, res: Respon
   res.json(account);
 });
 
-app.post("/api/tenants/:id/users", (req: Request, res: Response) => {
+app.post("/api/tenants/:id/users", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { name, email, role } = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && name && email && role) {
+    if (!authenticatedTenantId || authenticatedTenantId !== id) return res.status(403).json({ error: "Tenant inválido" });
+    const normalizedRole = String(role).toLowerCase();
+    const databaseRole = normalizedRole.includes("admin") ? "admin" : normalizedRole.includes("director") || normalizedRole.includes("jefe") ? "project_manager" : normalizedRole.includes("tesor") || normalizedRole.includes("cont") ? "accountant" : normalizedRole.includes("lector") || normalizedRole.includes("viewer") ? "viewer" : "member";
+    const usersResult = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    let authUser: any = usersResult.data.users.find(item => item.email?.toLowerCase() === String(email).toLowerCase());
+    if (!authUser) {
+      const invite = await supabaseAdmin.auth.admin.inviteUserByEmail(String(email), { data: { nombre: name, user_type: "tenant" } });
+      if (invite.error || !invite.data.user) return res.status(400).json({ error: invite.error?.message || "No se pudo invitar al usuario" });
+      authUser = invite.data.user;
+    }
+    const { error } = await supabaseAdmin.from("tenant_members").upsert({ tenant_id: id, user_id: authUser.id, role: databaseRole, active: true }, { onConflict: "tenant_id,user_id" });
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json({ name, email, role: databaseRole, active: true });
+  }
   if (!name || !email || !role) {
     return res.status(400).json({ error: "Nombre, email y rol requeridos" });
   }
@@ -2966,6 +3089,28 @@ app.post("/api/tenants/:id/users", (req: Request, res: Response) => {
 // 4. Create Financial Movement
 app.post("/api/movements", async (req: Request, res: Response) => {
   const movementData = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && authenticatedTenantId) {
+    if (!movementData.accountId || !movementData.amount || !movementData.type) return res.status(400).json({ error: "Faltan campos obligatorios" });
+    const [{ data: tenant }, { data: account }] = await Promise.all([
+      supabaseAdmin.from("tenants").select("default_currency").eq("id", authenticatedTenantId).single(),
+      supabaseAdmin.from("financial_accounts").select("id,currency").eq("id", movementData.accountId).eq("tenant_id", authenticatedTenantId).single()
+    ]);
+    if (!tenant || !account) return res.status(400).json({ error: "Cuenta o tenant inválido" });
+    if (movementData.purchaseRequestId) {
+      const { data: linkedRequest } = await supabaseAdmin.from("purchase_requests").select("id,project_id").eq("id", movementData.purchaseRequestId).eq("tenant_id", authenticatedTenantId).maybeSingle();
+      if (!linkedRequest || movementData.type !== MovementType.EGRESO || (movementData.projectId && linkedRequest.project_id !== movementData.projectId)) return res.status(400).json({ error: "Asociación de nota de pedido inválida" });
+    }
+    const movementDate = movementData.date || new Date().toISOString().split("T")[0];
+    let dailyRate: DailyOfficialExchangeRate;
+    try { dailyRate = await getDailyOfficialRate(movementDate); }
+    catch { return res.status(503).json({ error: "No se pudo obtener el tipo de cambio oficial" }); }
+    const amount = Number(movementData.amount);
+    const currency = movementData.currency || account.currency;
+    const { data: movement, error } = await supabaseAdmin.from("financial_movements").insert({ tenant_id: authenticatedTenantId, project_id: movementData.projectId || null, account_id: movementData.accountId, target_account_id: movementData.targetAccountId || null, counterparty_id: movementData.counterpartyId || null, category_id: movementData.categoryId || null, purchase_request_id: movementData.purchaseRequestId || null, amount, currency, consolidation_amount: convertAmount(amount, currency, tenant.default_currency, dailyRate.sell), exchange_rate: dailyRate.sell, exchange_rate_date: dailyRate.date, movement_type: movementData.type, description: movementData.description || "", status: movementData.status || MovementStatus.DRAFT, movement_date: movementDate, performed_by: movementData.performedBy || "Administración Central", audit_trail: [] }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json({ id: movement.id, tenantId: movement.tenant_id, projectId: movement.project_id, accountId: movement.account_id, targetAccountId: movement.target_account_id, counterpartyId: movement.counterparty_id, categoryId: movement.category_id, purchaseRequestId: movement.purchase_request_id, amount: Number(movement.amount), currency: movement.currency, baseAmount: Number(movement.consolidation_amount), exchangeRate: Number(movement.exchange_rate), exchangeRateDate: movement.exchange_rate_date, type: movement.movement_type, description: movement.description, status: movement.status, date: movement.movement_date, performedBy: movement.performed_by });
+  }
   if (!movementData.tenantId || !movementData.accountId || !movementData.amount || !movementData.type) {
     return res.status(400).json({ error: "Missing required fields" });
   }
@@ -3032,9 +3177,36 @@ app.post("/api/movements", async (req: Request, res: Response) => {
 });
 
 // 5. Update Movement Status (Workflow approval)
-app.put("/api/movements/:id/status", (req: Request, res: Response) => {
+app.put("/api/movements/:id/status", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { status, approvedBy } = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && authenticatedTenantId) {
+    const { data: movement, error: findError } = await supabaseAdmin.from("financial_movements").select("*").eq("id", id).eq("tenant_id", authenticatedTenantId).single();
+    if (findError || !movement) return res.status(404).json({ error: "Movimiento no encontrado" });
+    const wasPosted = movement.status === "POSTED";
+    const willBePosted = status === "POSTED";
+    if (wasPosted !== willBePosted) {
+      const direction = willBePosted ? 1 : -1;
+      const { data: source } = await supabaseAdmin.from("financial_accounts").select("balance,currency").eq("id", movement.account_id).eq("tenant_id", authenticatedTenantId).single();
+      if (!source) return res.status(400).json({ error: "Cuenta origen no encontrada" });
+      let sourceDelta = movement.movement_type === "INGRESO" ? Number(movement.amount) : -Number(movement.amount);
+      if (movement.movement_type === "TRANSFERENCIA") sourceDelta = -Number(movement.amount);
+      const { error: sourceError } = await supabaseAdmin.from("financial_accounts").update({ balance: Number(source.balance) + sourceDelta * direction }).eq("id", movement.account_id).eq("tenant_id", authenticatedTenantId);
+      if (sourceError) return res.status(400).json({ error: sourceError.message });
+      if (movement.movement_type === "TRANSFERENCIA" && movement.target_account_id) {
+        const { data: target } = await supabaseAdmin.from("financial_accounts").select("balance,currency").eq("id", movement.target_account_id).eq("tenant_id", authenticatedTenantId).single();
+        if (target) {
+          const received = movement.currency === target.currency ? Number(movement.amount) : Number(movement.consolidation_amount);
+          await supabaseAdmin.from("financial_accounts").update({ balance: Number(target.balance) + received * direction }).eq("id", movement.target_account_id).eq("tenant_id", authenticatedTenantId);
+        }
+      }
+    }
+    const trail = Array.isArray(movement.audit_trail) ? movement.audit_trail : [];
+    const { data: updated, error } = await supabaseAdmin.from("financial_movements").update({ status, approved_by: approvedBy || movement.approved_by, audit_trail: [...trail, { at: new Date().toISOString(), action: "STATUS_CHANGED", from: movement.status, to: status, by: approvedBy || null }] }).eq("id", id).eq("tenant_id", authenticatedTenantId).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json({ id: updated.id, tenantId: updated.tenant_id, accountId: updated.account_id, amount: Number(updated.amount), currency: updated.currency, type: updated.movement_type, description: updated.description, status: updated.status, date: updated.movement_date, approvedBy: updated.approved_by });
+  }
 
   const mov = movements.find(m => m.id === id);
   if (!mov) {
@@ -3102,8 +3274,18 @@ function revertMovementFromBalance(mov: FinancialMovement) {
 }
 
 // 6. Perform Cash Count (Archeo)
-app.post("/api/cash-counts", (req: Request, res: Response) => {
+app.post("/api/cash-counts", async (req: Request, res: Response) => {
   const countData = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && authenticatedTenantId) {
+    if (!countData.accountId || countData.physicalBalance === undefined) return res.status(400).json({ error: "Faltan datos del arqueo" });
+    const { data: account } = await supabaseAdmin.from("financial_accounts").select("balance,currency").eq("id", countData.accountId).eq("tenant_id", authenticatedTenantId).single();
+    if (!account) return res.status(404).json({ error: "Cuenta no encontrada" });
+    const physicalBalance = Number(countData.physicalBalance);
+    const { data: count, error } = await supabaseAdmin.from("cash_counts").insert({ tenant_id: authenticatedTenantId, project_id: countData.projectId || null, account_id: countData.accountId, count_date: countData.countDate || new Date().toISOString().split("T")[0], system_balance: Number(account.balance), physical_balance: physicalBalance, difference: physicalBalance - Number(account.balance), currency: account.currency, status: "PENDING_APPROVAL", performed_by: countData.performedBy || "Auditor Obra", notes: countData.notes || null }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json({ id: count.id, tenantId: count.tenant_id, accountId: count.account_id, projectId: count.project_id, countDate: count.count_date, systemBalance: Number(count.system_balance), physicalBalance: Number(count.physical_balance), difference: Number(count.difference), currency: count.currency, status: count.status, performedBy: count.performed_by, notes: count.notes });
+  }
   if (!countData.tenantId || !countData.accountId || countData.physicalBalance === undefined) {
     return res.status(400).json({ error: "Missing required parameters" });
   }
@@ -3141,6 +3323,28 @@ app.post("/api/cash-counts", (req: Request, res: Response) => {
 app.put("/api/cash-counts/:id/approve", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { approvedBy } = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && authenticatedTenantId) {
+    const { data: count } = await supabaseAdmin.from("cash_counts").select("*").eq("id", id).eq("tenant_id", authenticatedTenantId).single();
+    if (!count) return res.status(404).json({ error: "Arqueo no encontrado" });
+    const approver = approvedBy || "Gerencia Administrativa";
+    if (Number(count.difference) !== 0) {
+      const [{ data: account }, { data: tenant }] = await Promise.all([
+        supabaseAdmin.from("financial_accounts").select("balance,currency").eq("id", count.account_id).eq("tenant_id", authenticatedTenantId).single(),
+        supabaseAdmin.from("tenants").select("default_currency").eq("id", authenticatedTenantId).single()
+      ]);
+      if (!account || !tenant) return res.status(400).json({ error: "Cuenta o tenant inválido" });
+      const rate = await getDailyOfficialRate(count.count_date);
+      const amount = Math.abs(Number(count.difference));
+      const { error: movementError } = await supabaseAdmin.from("financial_movements").insert({ tenant_id: authenticatedTenantId, project_id: count.project_id, account_id: count.account_id, amount, currency: count.currency, consolidation_amount: convertAmount(amount, count.currency, tenant.default_currency, rate.sell), exchange_rate: rate.sell, exchange_rate_date: rate.date, movement_type: Number(count.difference) > 0 ? "INGRESO" : "EGRESO", description: `Ajuste automático de arqueo ${count.id}`, status: "POSTED", movement_date: count.count_date, performed_by: "Sistema - Arqueo Automático", approved_by: approver, audit_trail: [{ at: new Date().toISOString(), action: "CASH_COUNT_ADJUSTMENT" }] });
+      if (movementError) return res.status(400).json({ error: movementError.message });
+      const { error: balanceError } = await supabaseAdmin.from("financial_accounts").update({ balance: Number(count.physical_balance) }).eq("id", count.account_id).eq("tenant_id", authenticatedTenantId);
+      if (balanceError) return res.status(400).json({ error: balanceError.message });
+    }
+    const { data: updated, error } = await supabaseAdmin.from("cash_counts").update({ status: "APPROVED", approved_by: approver }).eq("id", id).eq("tenant_id", authenticatedTenantId).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json({ id: updated.id, tenantId: updated.tenant_id, accountId: updated.account_id, countDate: updated.count_date, systemBalance: Number(updated.system_balance), physicalBalance: Number(updated.physical_balance), difference: Number(updated.difference), currency: updated.currency, status: updated.status, approvedBy: updated.approved_by });
+  }
 
   const count = cashCounts.find(c => c.id === id);
   if (!count) {
@@ -3197,8 +3401,21 @@ app.put("/api/cash-counts/:id/approve", async (req: Request, res: Response) => {
 });
 
 // 8. Create Purchase Request
-app.post("/api/purchase-requests", (req: Request, res: Response) => {
+app.post("/api/purchase-requests", async (req: Request, res: Response) => {
   const prData = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && authenticatedTenantId) {
+    if (!prData.projectId || !prData.title || !prData.items?.length) return res.status(400).json({ error: "Faltan datos de la nota de pedido" });
+    const { count } = await supabaseAdmin.from("purchase_requests").select("id", { count: "exact", head: true }).eq("tenant_id", authenticatedTenantId);
+    const code = prData.code || `NP-${String((count || 0) + 1).padStart(4, "0")}`;
+    const estimatedTotal = prData.items.reduce((sum: number, item: any) => sum + Number(item.quantity) * Number(item.estimatedPrice || 0), 0);
+    const categoryId = prData.categoryId && /^[0-9a-f-]{36}$/i.test(prData.categoryId) ? prData.categoryId : null;
+    const { data: request, error: requestError } = await supabaseAdmin.from("purchase_requests").insert({ tenant_id: authenticatedTenantId, project_id: prData.projectId, category_id: categoryId, code, title: prData.title, status: "PENDING", requested_by: prData.requestedBy || "Jefe de Compras", required_date: prData.requiredDate || new Date().toISOString().split("T")[0], estimated_total: estimatedTotal, currency: prData.currency || "USD" }).select("*").single();
+    if (requestError) return res.status(400).json({ error: requestError.message });
+    const { data: items, error: itemsError } = await supabaseAdmin.from("purchase_items").insert(prData.items.map((item: any) => ({ purchase_request_id: request.id, description: item.description, quantity: Number(item.quantity), unit: item.unit || "Unidad", estimated_price: Number(item.estimatedPrice || 0), actual_price: item.actualPrice ? Number(item.actualPrice) : null, supplier_id: item.supplierId && /^[0-9a-f-]{36}$/i.test(item.supplierId) ? item.supplierId : null, received_quantity: Number(item.receivedQuantity || 0) }))).select("*");
+    if (itemsError) { await supabaseAdmin.from("purchase_requests").delete().eq("id", request.id); return res.status(400).json({ error: itemsError.message }); }
+    return res.status(201).json({ id: request.id, tenantId: request.tenant_id, projectId: request.project_id, categoryId: request.category_id, code: request.code, title: request.title, status: request.status, requestedBy: request.requested_by, requiredDate: request.required_date, estimatedTotal: Number(request.estimated_total), currency: request.currency, items: (items || []).map(item => ({ id: item.id, description: item.description, quantity: Number(item.quantity), unit: item.unit, estimatedPrice: Number(item.estimated_price), actualPrice: item.actual_price === null ? undefined : Number(item.actual_price), supplierId: item.supplier_id, receivedQuantity: Number(item.received_quantity) })) });
+  }
   if (!prData.tenantId || !prData.projectId || !prData.title || !prData.categoryId || !prData.items) {
     return res.status(400).json({ error: "Missing required purchase fields" });
   }
@@ -3240,6 +3457,40 @@ app.post("/api/purchase-requests", (req: Request, res: Response) => {
 app.put("/api/purchase-requests/:id/flow", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { action, supplierId, itemsActualPrices, receivedQuantities } = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && authenticatedTenantId) {
+    const { data: request } = await supabaseAdmin.from("purchase_requests").select("*").eq("id", id).eq("tenant_id", authenticatedTenantId).single();
+    if (!request) return res.status(404).json({ error: "Nota de pedido no encontrada" });
+    const statusByAction: Record<string, string> = { APPROVE: "APPROVED", SEND_RFQ: "RFQ", PLACE_ORDER: "ORDERED", RECEIVE: "RECEIVED", RECEIVE_GOODS: "RECEIVED", INVOICE: "INVOICED", INVOICE_SUPPLIER: "INVOICED", PAY: "PAID", REJECT: "REJECTED" };
+    const nextStatus = statusByAction[action];
+    if (!nextStatus) return res.status(400).json({ error: "Acción inválida" });
+    const { data: currentItems } = await supabaseAdmin.from("purchase_items").select("*").eq("purchase_request_id", id);
+    if (action === "PLACE_ORDER" || action === "RECEIVE" || action === "RECEIVE_GOODS") {
+      for (const item of currentItems || []) {
+        const changes: Record<string, unknown> = {};
+        if (supplierId && /^[0-9a-f-]{36}$/i.test(supplierId)) changes.supplier_id = supplierId;
+        if (itemsActualPrices?.[item.id] !== undefined) changes.actual_price = Number(itemsActualPrices[item.id]);
+        if (receivedQuantities?.[item.id] !== undefined) changes.received_quantity = Number(receivedQuantities[item.id]);
+        if (Object.keys(changes).length) await supabaseAdmin.from("purchase_items").update(changes).eq("id", item.id);
+      }
+    }
+    const { data: refreshedItems } = await supabaseAdmin.from("purchase_items").select("*").eq("purchase_request_id", id);
+    const total = (refreshedItems || []).reduce((sum, item) => sum + Number(item.quantity) * Number(item.actual_price ?? item.estimated_price), 0);
+    if (action === "PAY") {
+      const [{ data: account }, { data: tenant }] = await Promise.all([
+        supabaseAdmin.from("financial_accounts").select("*").eq("tenant_id", authenticatedTenantId).eq("account_type", "Banco").limit(1).maybeSingle(),
+        supabaseAdmin.from("tenants").select("default_currency").eq("id", authenticatedTenantId).single()
+      ]);
+      if (!account || !tenant) return res.status(400).json({ error: "Configure una cuenta bancaria antes de pagar" });
+      const paymentDate = new Date().toISOString().split("T")[0]; const rate = await getDailyOfficialRate(paymentDate);
+      const { error: movementError } = await supabaseAdmin.from("financial_movements").insert({ tenant_id: authenticatedTenantId, project_id: request.project_id, account_id: account.id, counterparty_id: refreshedItems?.[0]?.supplier_id || null, category_id: request.category_id, purchase_request_id: request.id, amount: total, currency: request.currency, consolidation_amount: convertAmount(total, request.currency, tenant.default_currency, rate.sell), exchange_rate: rate.sell, exchange_rate_date: rate.date, movement_type: "EGRESO", description: `Pago nota de pedido ${request.code}: ${request.title}`, status: "POSTED", movement_date: paymentDate, performed_by: "Sistema de Compras Automático", audit_trail: [] });
+      if (movementError) return res.status(400).json({ error: movementError.message });
+      await supabaseAdmin.from("financial_accounts").update({ balance: Number(account.balance) - total }).eq("id", account.id);
+    }
+    const { data: updated, error } = await supabaseAdmin.from("purchase_requests").update({ status: nextStatus, estimated_total: total }).eq("id", id).eq("tenant_id", authenticatedTenantId).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json({ id: updated.id, tenantId: updated.tenant_id, projectId: updated.project_id, categoryId: updated.category_id, code: updated.code, title: updated.title, status: updated.status, requestedBy: updated.requested_by, requiredDate: updated.required_date, estimatedTotal: Number(updated.estimated_total), currency: updated.currency, items: (refreshedItems || []).map(item => ({ id: item.id, description: item.description, quantity: Number(item.quantity), unit: item.unit, estimatedPrice: Number(item.estimated_price), actualPrice: item.actual_price === null ? undefined : Number(item.actual_price), supplierId: item.supplier_id, receivedQuantity: Number(item.received_quantity) })) });
+  }
 
   const pr = purchaseRequests.find(p => p.id === id);
   if (!pr) {
@@ -3321,8 +3572,19 @@ app.put("/api/purchase-requests/:id/flow", async (req: Request, res: Response) =
   res.json(pr);
 });
 
-app.post("/api/sales/units", (req: Request, res: Response) => {
+app.post("/api/sales/units", async (req: Request, res: Response) => {
   const data = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const { data: project } = await supabaseAdmin.from("projects").select("id").eq("id", data.projectId).eq("tenant_id", tenantId).single();
+    if (!project || !data.name || !data.type || !data.currency || Number(data.price) < 0) return res.status(400).json({ error: "Datos de unidad incompletos o proyecto inválido" });
+    const { count } = await supabaseAdmin.from("sellable_units").select("id", { count: "exact", head: true }).eq("project_id", data.projectId);
+    const code = data.code || `U-${String((count || 0) + 1).padStart(3, "0")}`;
+    const totalSurface = Number(data.surfaceM2) || Number(data.coveredSurfaceM2 || 0) + Number(data.semiCoveredSurfaceM2 || 0) + Number(data.uncoveredSurfaceM2 || 0);
+    const { data: unit, error } = await supabaseAdmin.from("sellable_units").insert({ project_id: data.projectId, code, name: String(data.name).trim(), unit_type: data.type, status: "AVAILABLE", description: data.description || null, covered_surface_m2: Number(data.coveredSurfaceM2 || 0), semi_covered_surface_m2: Number(data.semiCoveredSurfaceM2 || 0), uncovered_surface_m2: Number(data.uncoveredSurfaceM2 || 0), total_surface_m2: totalSurface, floor: data.floor || null, rooms: Number(data.rooms || 0), bedrooms: Number(data.bedrooms || 0), bathrooms: Number(data.bathrooms || 0), view_description: data.view || null, orientation: data.orientation || null, base_price: Number(data.price), currency: data.currency, financing_description: data.financingDescription || null }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json({ id: unit.id, projectId: unit.project_id, name: unit.name, type: unit.unit_type, status: unit.status, surfaceM2: Number(unit.total_surface_m2), coveredSurfaceM2: Number(unit.covered_surface_m2), semiCoveredSurfaceM2: Number(unit.semi_covered_surface_m2), uncoveredSurfaceM2: Number(unit.uncovered_surface_m2), description: unit.description, view: unit.view_description, orientation: unit.orientation, floor: unit.floor, rooms: unit.rooms, bedrooms: unit.bedrooms, bathrooms: unit.bathrooms, imageUrls: [], financingDescription: unit.financing_description, price: Number(unit.base_price), currency: unit.currency });
+  }
   const project = projects.find(item => item.id === data.projectId && item.tenantId === data.tenantId);
   if (!project || !data.name || !data.type || !data.currency || Number(data.price) < 0) {
     return res.status(400).json({ error: "Datos de unidad incompletos o proyecto inválido" });
@@ -3355,8 +3617,29 @@ app.post("/api/sales/units", (req: Request, res: Response) => {
   res.status(201).json(unit);
 });
 
-app.post("/api/sales/opportunities", (req: Request, res: Response) => {
+app.post("/api/sales/opportunities", async (req: Request, res: Response) => {
   const data = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const user = await getRequestAuthUser(req);
+    if (!user || !data.projectId || !data.customerId || !Array.isArray(data.unitIds) || !data.unitIds.length) return res.status(400).json({ error: "Cliente, proyecto o unidades inválidos" });
+    const [{ data: project }, { data: customer }, { data: selectedUnits }] = await Promise.all([
+      supabaseAdmin.from("projects").select("id").eq("id", data.projectId).eq("tenant_id", tenantId).single(),
+      supabaseAdmin.from("counterparties").select("*").eq("id", data.customerId).eq("tenant_id", tenantId).eq("counterparty_type", "Cliente").single(),
+      supabaseAdmin.from("sellable_units").select("*").eq("project_id", data.projectId).in("id", data.unitIds)
+    ]);
+    if (!project || !customer || !selectedUnits || selectedUnits.length !== data.unitIds.length || selectedUnits.some(unit => unit.status === "SOLD")) return res.status(400).json({ error: "Cliente, proyecto o unidades inválidos" });
+    const { error: customerError } = await supabaseAdmin.from("crm_customers").upsert({ id: customer.id, tenant_id: tenantId, name: customer.name, tax_id: customer.tax_id, contact_name: customer.contact_name, email: customer.email, phone: customer.phone }, { onConflict: "id" });
+    if (customerError) return res.status(400).json({ error: customerError.message });
+    const basePrice = selectedUnits.reduce((sum, unit) => sum + Number(unit.base_price), 0); const negotiatedPrice = Number(data.negotiatedPrice) || basePrice; const reservationDays = Math.max(0, Number(data.reservationDays) || 0); const stage = reservationDays > 0 ? "RESERVED" : (data.stage || "LEAD");
+    const reservationExpiresAt = reservationDays ? new Date(Date.now() + reservationDays * 86400000).toISOString() : null;
+    const { data: opportunity, error } = await supabaseAdmin.from("sales_opportunities").insert({ tenant_id: tenantId, project_id: data.projectId, customer_id: customer.id, title: data.title || `${customer.name} · ${selectedUnits.map(unit => unit.name).join(" + ")}`, stage, reservation_expires_at: reservationExpiresAt, base_price: basePrice, negotiated_price: negotiatedPrice, currency: data.currency || selectedUnits[0].currency, discount_amount: basePrice - negotiatedPrice, down_payment: Number(data.downPayment || 0), cash_payment: Number(data.cashPayment || 0), installment_count: Number(data.installmentCount || 0), installment_amount: Number(data.installmentAmount || 0), reinforcements_amount: Number(data.reinforcements || 0), possession_balance: Number(data.possessionBalance || 0), financing_rate: Number(data.financingRate || 0), index_type: data.indexType || "NONE", base_index_value: Number(data.baseIndexValue || 1), commission_type: data.commissionType || "PERCENTAGE", commission_value: Number(data.commissionValue || 0), seller_name: data.sellerName || null, next_action: data.nextAction || null, next_action_date: data.nextActionDate || null, notes: data.notes || null, created_by: user.id }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    const { error: unitsError } = await supabaseAdmin.from("sales_opportunity_units").insert(selectedUnits.map(unit => ({ opportunity_id: opportunity.id, unit_id: unit.id, base_price_at_offer: Number(unit.base_price), negotiated_price: null })));
+    if (unitsError) { await supabaseAdmin.from("sales_opportunities").delete().eq("id", opportunity.id); return res.status(400).json({ error: unitsError.message }); }
+    if (stage === "RESERVED") await supabaseAdmin.from("sellable_units").update({ status: "RESERVED" }).in("id", data.unitIds);
+    return res.status(201).json({ id: opportunity.id, tenantId, projectId: opportunity.project_id, customerId: opportunity.customer_id, unitIds: data.unitIds, title: opportunity.title, stage: opportunity.stage, createdAt: opportunity.created_at, updatedAt: opportunity.updated_at, reservationExpiresAt: opportunity.reservation_expires_at, basePrice, negotiatedPrice, currency: opportunity.currency, discountAmount: Number(opportunity.discount_amount), downPayment: Number(opportunity.down_payment), cashPayment: Number(opportunity.cash_payment), installmentCount: opportunity.installment_count, installmentAmount: Number(opportunity.installment_amount), reinforcements: Number(opportunity.reinforcements_amount), possessionBalance: Number(opportunity.possession_balance), financingRate: Number(opportunity.financing_rate), indexType: opportunity.index_type, baseIndexValue: Number(opportunity.base_index_value), commissionType: opportunity.commission_type, commissionValue: Number(opportunity.commission_value), sellerName: opportunity.seller_name, nextAction: opportunity.next_action, nextActionDate: opportunity.next_action_date, notes: opportunity.notes });
+  }
   const project = projects.find(item => item.id === data.projectId && item.tenantId === data.tenantId);
   const customer = counterparties.find(item => item.id === data.customerId && item.tenantId === data.tenantId && item.type === "Cliente");
   const selectedUnits = sellableUnits.filter(item => data.unitIds?.includes(item.id) && item.projectId === data.projectId);
@@ -3412,7 +3695,39 @@ app.post("/api/sales/opportunities", (req: Request, res: Response) => {
   res.status(201).json(opportunity);
 });
 
-app.put("/api/sales/opportunities/:id/stage", (req: Request, res: Response) => {
+app.put("/api/sales/opportunities/:id/stage", async (req: Request, res: Response) => {
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const nextStage = req.body.stage;
+    const allowedStages = ["LEAD", "CONTACTED", "VISIT", "NEGOTIATION", "RESERVED", "WON", "LOST", "EXPIRED", "CANCELLED_BY_CLIENT"];
+    if (!allowedStages.includes(nextStage)) return res.status(400).json({ error: "Etapa inválida" });
+    if (["LOST", "CANCELLED_BY_CLIENT"].includes(nextStage) && !req.body.lossReason) return res.status(400).json({ error: "Debe indicar el motivo de cierre" });
+    const { data: opportunity } = await supabaseAdmin.from("sales_opportunities").select("*,sales_opportunity_units(*)").eq("id", req.params.id).eq("tenant_id", tenantId).single();
+    if (!opportunity) return res.status(404).json({ error: "Oportunidad no encontrada" });
+    const unitIds = (opportunity.sales_opportunity_units || []).map((item: any) => item.unit_id);
+    if (["LOST", "EXPIRED", "CANCELLED_BY_CLIENT"].includes(nextStage) && unitIds.length) await supabaseAdmin.from("sellable_units").update({ status: "AVAILABLE" }).in("id", unitIds).eq("status", "RESERVED");
+    if (nextStage === "RESERVED" && unitIds.length) await supabaseAdmin.from("sellable_units").update({ status: "RESERVED" }).in("id", unitIds);
+    const { data: updated, error } = await supabaseAdmin.from("sales_opportunities").update({ stage: nextStage, loss_reason: req.body.lossReason || opportunity.loss_reason }).eq("id", opportunity.id).eq("tenant_id", tenantId).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    if (nextStage === "WON") {
+      const { data: existing } = await supabaseAdmin.from("sales_contracts").select("id").eq("opportunity_id", opportunity.id).maybeSingle();
+      if (!existing) {
+        const { data: contract, error: contractError } = await supabaseAdmin.from("sales_contracts").insert({ tenant_id: tenantId, project_id: opportunity.project_id, opportunity_id: opportunity.id, customer_id: opportunity.customer_id, contract_date: new Date().toISOString().split("T")[0], total_price: opportunity.negotiated_price, currency: opportunity.currency, down_payment: opportunity.down_payment, cash_payment: opportunity.cash_payment, reinforcements_amount: opportunity.reinforcements_amount, possession_balance: opportunity.possession_balance, installment_count: opportunity.installment_count, financing_rate: opportunity.financing_rate, index_type: opportunity.index_type, base_index_value: opportunity.base_index_value, commission_type: opportunity.commission_type, commission_value: opportunity.commission_value, status: "ACTIVE" }).select("*").single();
+        if (contractError) return res.status(400).json({ error: contractError.message });
+        const offerLines = opportunity.sales_opportunity_units || []; const offerTotal = offerLines.reduce((sum: number, item: any) => sum + Number(item.negotiated_price ?? item.base_price_at_offer), 0) || 1;
+        const { error: contractUnitError } = await supabaseAdmin.from("sales_contract_units").insert(offerLines.map((item: any) => ({ contract_id: contract.id, unit_id: item.unit_id, sale_price: Number((Number(opportunity.negotiated_price) * Number(item.negotiated_price ?? item.base_price_at_offer) / offerTotal).toFixed(2)) })));
+        if (contractUnitError) { await supabaseAdmin.from("sales_contracts").delete().eq("id", contract.id); return res.status(400).json({ error: contractUnitError.message }); }
+        if (unitIds.length) await supabaseAdmin.from("sellable_units").update({ status: "SOLD", current_owner_id: opportunity.customer_id }).in("id", unitIds);
+        const installmentCount = Number(opportunity.installment_count || 0);
+        if (installmentCount > 0) {
+          const installmentRows = Array.from({ length: installmentCount }, (_, index) => { const due = new Date(); due.setMonth(due.getMonth() + index + 1); return { contract_id: contract.id, installment_number: index + 1, installment_type: "INSTALLMENT", original_amount: opportunity.installment_amount, currency: opportunity.currency, due_date: due.toISOString().split("T")[0], index_type: opportunity.index_type, base_index_value: opportunity.base_index_value, current_index_value: opportunity.base_index_value, adjusted_amount: opportunity.installment_amount, paid_amount: 0, status: "PENDING" }; });
+          const { error: installmentError } = await supabaseAdmin.from("sales_installments").insert(installmentRows);
+          if (installmentError) return res.status(400).json({ error: installmentError.message });
+        }
+      }
+    }
+    return res.json({ ...updated, unitIds });
+  }
   const opportunity = salesOpportunities.find(item => item.id === req.params.id);
   if (!opportunity) return res.status(404).json({ error: "Oportunidad no encontrada" });
   const nextStage = req.body.stage as SalesOpportunity["stage"];
@@ -3490,9 +3805,19 @@ app.put("/api/sales/opportunities/:id/stage", (req: Request, res: Response) => {
 });
 
 // 10. Adjust Installments using CAC/Inflation indices (Section 11.5)
-app.post("/api/installments/:id/adjust", (req: Request, res: Response) => {
+app.post("/api/installments/:id/adjust", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { indexCurrentValue } = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    if (!indexCurrentValue || Number(indexCurrentValue) <= 0) return res.status(400).json({ error: "Valor de índice inválido" });
+    const { data: installment } = await supabaseAdmin.from("sales_installments").select("*,sales_contracts!inner(tenant_id)").eq("id", id).eq("sales_contracts.tenant_id", tenantId).single();
+    if (!installment) return res.status(404).json({ error: "Cuota no encontrada" });
+    const adjusted = Number((Number(installment.original_amount) * Number(indexCurrentValue) / Number(installment.base_index_value)).toFixed(2));
+    const { data: updated, error } = await supabaseAdmin.from("sales_installments").update({ current_index_value: Number(indexCurrentValue), adjusted_amount: adjusted }).eq("id", id).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json({ id: updated.id, contractId: updated.contract_id, installmentNumber: updated.installment_number, originalAmount: Number(updated.original_amount), currency: updated.currency, dueDate: updated.due_date, indexType: updated.index_type, indexBaseValue: Number(updated.base_index_value), indexCurrentValue: Number(updated.current_index_value), adjustedAmount: Number(updated.adjusted_amount), paidAmount: Number(updated.paid_amount), status: updated.status });
+  }
 
   const inst = installments.find(i => i.id === id);
   if (!inst) {
@@ -3516,6 +3841,23 @@ app.post("/api/installments/:id/adjust", (req: Request, res: Response) => {
 app.post("/api/installments/:id/pay", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { accountId, paidAmount, date } = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const { data: installment } = await supabaseAdmin.from("sales_installments").select("*,sales_contracts!inner(*)").eq("id", id).eq("sales_contracts.tenant_id", tenantId).single();
+    if (!installment) return res.status(404).json({ error: "Cuota no encontrada" });
+    const contract: any = Array.isArray(installment.sales_contracts) ? installment.sales_contracts[0] : installment.sales_contracts;
+    const payment = Number(paidAmount) || Number(installment.adjusted_amount || installment.original_amount); const newPaid = Number(installment.paid_amount) + payment; const total = Number(installment.adjusted_amount || installment.original_amount); const status = newPaid >= total * 0.99 ? "PAID" : "PARTIAL";
+    const { data: account } = await supabaseAdmin.from("financial_accounts").select("*").eq("id", accountId).eq("tenant_id", tenantId).single();
+    const { data: tenant } = await supabaseAdmin.from("tenants").select("default_currency").eq("id", tenantId).single();
+    if (!account || !tenant) return res.status(400).json({ error: "Cuenta de cobro inválida" });
+    const paymentDate = date || new Date().toISOString().split("T")[0]; const rate = await getDailyOfficialRate(paymentDate);
+    const { error: movementError } = await supabaseAdmin.from("financial_movements").insert({ tenant_id: tenantId, project_id: contract.project_id, account_id: account.id, counterparty_id: null, amount: payment, currency: installment.currency, consolidation_amount: convertAmount(payment, installment.currency, tenant.default_currency, rate.sell), exchange_rate: rate.sell, exchange_rate_date: rate.date, movement_type: "INGRESO", description: `Cobranza cuota #${installment.installment_number}`, status: "POSTED", movement_date: paymentDate, performed_by: "Cobranzas Automatizadas", audit_trail: [] });
+    if (movementError) return res.status(400).json({ error: movementError.message });
+    await supabaseAdmin.from("financial_accounts").update({ balance: Number(account.balance) + payment }).eq("id", account.id);
+    const { data: updated, error } = await supabaseAdmin.from("sales_installments").update({ paid_amount: newPaid, status }).eq("id", id).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json({ id: updated.id, contractId: updated.contract_id, installmentNumber: updated.installment_number, originalAmount: Number(updated.original_amount), currency: updated.currency, dueDate: updated.due_date, indexType: updated.index_type, indexBaseValue: Number(updated.base_index_value), indexCurrentValue: Number(updated.current_index_value), adjustedAmount: Number(updated.adjusted_amount), paidAmount: Number(updated.paid_amount), status: updated.status });
+  }
 
   const inst = installments.find(i => i.id === id);
   if (!inst) {
@@ -3627,7 +3969,6 @@ app.post("/api/projects", async (req: Request, res: Response) => {
       functional_units: projectDraft.functionalUnits,
       base_currency: projectDraft.baseCurrency,
       estimated_cost_per_m2: projectDraft.estimatedCostPerM2,
-      estimated_total_cost: projectDraft.estimatedTotalCost,
       physical_progress: 0,
       financial_progress: 0,
       project_type: projectDraft.projectType,
@@ -3656,14 +3997,37 @@ app.post("/api/projects", async (req: Request, res: Response) => {
     await supabaseAdmin.from("projects").delete().eq("id", newProj.id);
     return res.status(400).json({ error: budgetError.message });
   }
+  const { error: categoryError } = await supabaseAdmin.from("cost_categories").upsert(referenceLines.map(line => ({ tenant_id: tenantId, code: line.code, name: line.name, is_leaf: true })), { onConflict: "tenant_id,code" });
+  if (categoryError) {
+    await supabaseAdmin.from("projects").delete().eq("id", newProj.id);
+    return res.status(400).json({ error: categoryError.message });
+  }
 
   res.status(201).json(newProj);
 });
 
 // 12a. Update Project status, schedule, or progress
-app.put("/api/projects/:id", (req: Request, res: Response) => {
+app.put("/api/projects/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const pData = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const update: Record<string, unknown> = {};
+    for (const [clientKey, databaseKey] of Object.entries({ status: "status", name: "name", address: "address", city: "city", startDate: "start_date", plannedEndDate: "planned_end_date", projectType: "project_type", constructionType: "construction_type", description: "description", surfaceM2: "surface_m2", sellableSurfaceM2: "sellable_surface_m2", floors: "floors", functionalUnits: "functional_units", estimatedCostPerM2: "estimated_cost_per_m2", physicalProgress: "physical_progress", financialProgress: "financial_progress" })) if (pData[clientKey] !== undefined) update[databaseKey] = pData[clientKey];
+    const { data: updated, error } = Object.keys(update).length ? await supabaseAdmin.from("projects").update(update).eq("id", id).eq("tenant_id", tenantId).select("*").single() : await supabaseAdmin.from("projects").select("*").eq("id", id).eq("tenant_id", tenantId).single();
+    if (error || !updated) return res.status(404).json({ error: error?.message || "Proyecto no encontrado" });
+    if (Array.isArray(pData.schedule)) {
+      const deleteResult = await supabaseAdmin.from("project_tasks").delete().eq("project_id", id);
+      if (deleteResult.error) return res.status(400).json({ error: deleteResult.error.message });
+      if (pData.schedule.length) {
+        const { error: taskError } = await supabaseAdmin.from("project_tasks").insert(pData.schedule.map((task: any, index: number) => ({ project_id: id, name: task.taskName, start_week: Number(task.startWeek), end_week: Number(task.endWeek), progress: Number(task.progress || 0), sort_order: index })));
+        if (taskError) return res.status(400).json({ error: taskError.message });
+      }
+    }
+    const project = mapDatabaseProject(updated);
+    if (Array.isArray(pData.schedule)) project.schedule = pData.schedule;
+    return res.json(project);
+  }
   const project = projects.find(p => p.id === id);
   if (!project) {
     return res.status(404).json({ error: "Proyecto no encontrado" });
@@ -3704,8 +4068,29 @@ app.put("/api/projects/:id", (req: Request, res: Response) => {
 });
 
 // 12b. Edit a budget line and its detail subitems
-app.put("/api/budget-lines/:id", (req: Request, res: Response) => {
+app.put("/api/budget-lines/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const incidence = Number(req.body.incidence);
+    if (!Number.isFinite(incidence) || incidence < 0 || incidence > 100) return res.status(400).json({ error: "El porcentaje debe estar entre 0 y 100" });
+    const { data: line } = await supabaseAdmin.from("budget_lines").select("*,projects!inner(tenant_id,estimated_total_cost)").eq("id", id).eq("projects.tenant_id", tenantId).single();
+    if (!line) return res.status(404).json({ error: "Línea presupuestaria no encontrada" });
+    const projectData: any = Array.isArray(line.projects) ? line.projects[0] : line.projects;
+    const { data: updated, error } = await supabaseAdmin.from("budget_lines").update({ incidence, amount: Number((Number(projectData.estimated_total_cost) * incidence / 100).toFixed(2)), notes: req.body.notes !== undefined ? String(req.body.notes) : line.notes }).eq("id", id).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    if (Array.isArray(req.body.subitems)) {
+      const { error: deleteError } = await supabaseAdmin.from("budget_subitems").delete().eq("budget_line_id", id);
+      if (deleteError) return res.status(400).json({ error: deleteError.message });
+      const validSubitems = req.body.subitems.filter((item: any) => String(item.description || "").trim());
+      if (validSubitems.length) {
+        const { error: subitemError } = await supabaseAdmin.from("budget_subitems").insert(validSubitems.map((item: any, index: number) => ({ budget_line_id: id, description: String(item.description).trim(), amount: Math.max(0, Number(item.amount) || 0), notes: item.notes || null, sort_order: index })));
+        if (subitemError) return res.status(400).json({ error: subitemError.message });
+      }
+    }
+    const { data: subitems } = await supabaseAdmin.from("budget_subitems").select("*").eq("budget_line_id", id).order("sort_order");
+    return res.json({ id: updated.id, projectId: updated.project_id, categoryId: `budget-${updated.id}`, code: updated.code, name: updated.name, amount: Number(updated.amount), incidence: Number(updated.incidence), notes: updated.notes, subitems: (subitems || []).map(item => ({ id: item.id, description: item.description, amount: Number(item.amount), notes: item.notes })) });
+  }
   const line = budgetLines.find(item => item.id === id);
   if (!line) {
     return res.status(404).json({ error: "Línea presupuestaria no encontrada" });
@@ -3742,10 +4127,27 @@ app.put("/api/budget-lines/:id", (req: Request, res: Response) => {
 // 12c. Generate schedule with AI (Gemini)
 app.post("/api/projects/:id/generate-schedule", async (req: Request, res: Response) => {
   const { id } = req.params;
-  const project = projects.find(p => p.id === id);
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  let project = projects.find(p => p.id === id);
+  if (supabaseAdmin && tenantId) {
+    const { data: databaseProject } = await supabaseAdmin.from("projects").select("*").eq("id", id).eq("tenant_id", tenantId).single();
+    project = databaseProject ? mapDatabaseProject(databaseProject) : undefined;
+  }
   if (!project) {
     return res.status(404).json({ error: "Proyecto no encontrado" });
   }
+  const saveGeneratedSchedule = async (schedule: ProjectTask[]) => {
+    project!.schedule = schedule;
+    if (supabaseAdmin && tenantId) {
+      const { error: deleteError } = await supabaseAdmin.from("project_tasks").delete().eq("project_id", id);
+      if (deleteError) return res.status(400).json({ error: deleteError.message });
+      if (schedule.length) {
+        const { error: insertError } = await supabaseAdmin.from("project_tasks").insert(schedule.map((task, index) => ({ project_id: id, name: task.taskName, start_week: task.startWeek, end_week: task.endWeek, progress: task.progress, sort_order: index })));
+        if (insertError) return res.status(400).json({ error: insertError.message });
+      }
+    }
+    return res.json(project);
+  };
 
   const getFallbackTasks = (pType?: string, cType?: string) => {
     const isEdificio = cType === "Edificio" || project.name.toLowerCase().includes("torre") || project.name.toLowerCase().includes("edificio");
@@ -3787,9 +4189,7 @@ app.post("/api/projects/:id/generate-schedule", async (req: Request, res: Respon
   if (!ai) {
     console.log("Gemini API Client not initialized. Returning high-fidelity fallback schedule.");
     const schedule = getFallbackTasks(project.projectType, project.constructionType);
-    project.schedule = schedule;
-    persistAppState();
-    return res.json(project);
+    return saveGeneratedSchedule(schedule);
   }
 
   try {
@@ -3836,35 +4236,43 @@ Return a JSON array of these tasks directly matching the schema.`;
     if (contentText) {
       const generatedTasks = JSON.parse(contentText);
       if (Array.isArray(generatedTasks)) {
-        project.schedule = generatedTasks.map((t: any, idx: number) => ({
+        const schedule = generatedTasks.map((t: any, idx: number) => ({
           id: `task-gen-${Date.now()}-${idx}`,
           taskName: t.taskName || `Etapa ${idx + 1}`,
           startWeek: Number(t.startWeek) || 1,
           endWeek: Number(t.endWeek) || 4,
           progress: 0
         }));
-        persistAppState();
-        return res.json(project);
+        return saveGeneratedSchedule(schedule);
       }
     }
     
     const schedule = getFallbackTasks(project.projectType, project.constructionType);
-    project.schedule = schedule;
-    persistAppState();
-    return res.json(project);
+    return saveGeneratedSchedule(schedule);
   } catch (error) {
     console.error("Error generating schedule via Gemini API:", error);
     const schedule = getFallbackTasks(project.projectType, project.constructionType);
-    project.schedule = schedule;
-    persistAppState();
-    return res.json(project);
+    return saveGeneratedSchedule(schedule);
   }
 });
 
 // 12d. Add Work progress certification
-app.post("/api/projects/:id/certifications", (req: Request, res: Response) => {
+app.post("/api/projects/:id/certifications", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { date, physicalProgress, financialProgress, certifiedBy, notes } = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const user = await getRequestAuthUser(req);
+    const { data: project } = await supabaseAdmin.from("projects").select("id").eq("id", id).eq("tenant_id", tenantId).single();
+    if (!project || !user) return res.status(404).json({ error: "Proyecto no encontrado" });
+    const physical = Number(physicalProgress) || 0; const financial = Number(financialProgress) || 0;
+    const { data: certification, error } = await supabaseAdmin.from("project_certifications").insert({ project_id: id, certification_date: date || new Date().toISOString().split("T")[0], physical_progress: physical, financial_progress: financial, certified_by: certifiedBy || "Director de Obra", notes: notes || null, created_by: user.id }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    const { data: updatedProject, error: updateError } = await supabaseAdmin.from("projects").update({ physical_progress: physical, financial_progress: financial }).eq("id", id).eq("tenant_id", tenantId).select("*").single();
+    if (updateError) { await supabaseAdmin.from("project_certifications").delete().eq("id", certification.id); return res.status(400).json({ error: updateError.message }); }
+    const mapped = mapDatabaseProject(updatedProject); mapped.certifications = [{ id: certification.id, projectId: id, date: certification.certification_date, physicalProgress: physical, financialProgress: financial, certifiedBy: certification.certified_by, notes: certification.notes }];
+    return res.status(201).json(mapped);
+  }
   const project = projects.find(p => p.id === id);
   if (!project) {
     return res.status(404).json({ error: "Proyecto no encontrado" });
@@ -3894,8 +4302,16 @@ app.post("/api/projects/:id/certifications", (req: Request, res: Response) => {
 });
 
 // 12b. Add/Update Counterparty
-app.post("/api/counterparties", (req: Request, res: Response) => {
+app.post("/api/counterparties", async (req: Request, res: Response) => {
   const { id, tenantId, name, type, taxId, contactName, email, phone } = req.body;
+  const authenticatedTenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && authenticatedTenantId && name && type) {
+    const payload = { tenant_id: authenticatedTenantId, name, counterparty_type: type, tax_id: taxId || null, contact_name: contactName || null, email: email || null, phone: phone || null };
+    const query = id && /^[0-9a-f-]{36}$/i.test(id) ? supabaseAdmin.from("counterparties").update(payload).eq("id", id).eq("tenant_id", authenticatedTenantId) : supabaseAdmin.from("counterparties").insert(payload);
+    const { data: counterparty, error } = await query.select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(id ? 200 : 201).json({ id: counterparty.id, tenantId: counterparty.tenant_id, name: counterparty.name, type: counterparty.counterparty_type, taxId: counterparty.tax_id, contactName: counterparty.contact_name, email: counterparty.email, phone: counterparty.phone });
+  }
   if (!tenantId || !name || !type) {
     return res.status(400).json({ error: "Faltan campos obligatorios" });
   }
@@ -3930,8 +4346,15 @@ app.post("/api/counterparties", (req: Request, res: Response) => {
 });
 
 // 13. Create Early Consortium Complaint
-app.post("/api/consortium/complaints", (req: Request, res: Response) => {
+app.post("/api/consortium/complaints", async (req: Request, res: Response) => {
   const reqData = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    if (!reqData.projectId || !reqData.customerId || !reqData.description) return res.status(400).json({ error: "Faltan datos del reclamo" });
+    const { data: request, error } = await supabaseAdmin.from("maintenance_requests").insert({ tenant_id: tenantId, project_id: reqData.projectId, unit_id: reqData.unitId || null, customer_id: reqData.customerId, reporter_name: reqData.reporterName || "Propietario", reporter_contact: reqData.reporterContact || null, description: reqData.description, reported_date: reqData.reportedDate || new Date().toISOString().split("T")[0], status: "PENDING", warranty_coverage: reqData.warrantyCoverage || "UNDER_INVESTIGATION", notes: reqData.notes || null }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json({ id: request.id, tenantId: request.tenant_id, projectId: request.project_id, unitId: request.unit_id, customerId: request.customer_id, reporterName: request.reporter_name, reporterContact: request.reporter_contact, description: request.description, reportedDate: request.reported_date, status: request.status, warrantyCoverage: request.warranty_coverage, notes: request.notes });
+  }
   if (!reqData.tenantId || !reqData.projectId || !reqData.customerId || !reqData.description) {
     return res.status(400).json({ error: "Missing required warranty fields" });
   }
@@ -3955,9 +4378,16 @@ app.post("/api/consortium/complaints", (req: Request, res: Response) => {
   res.status(201).json(newMaint);
 });
 
-app.put("/api/consortium/complaints/:id", (req: Request, res: Response) => {
+app.put("/api/consortium/complaints/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { status, warrantyCoverage, notes } = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const update: Record<string, unknown> = {}; if (status) update.status = status; if (warrantyCoverage) update.warranty_coverage = warrantyCoverage; if (notes !== undefined) update.notes = notes;
+    const { data: request, error } = await supabaseAdmin.from("maintenance_requests").update(update).eq("id", id).eq("tenant_id", tenantId).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.json({ id: request.id, tenantId: request.tenant_id, projectId: request.project_id, unitId: request.unit_id, customerId: request.customer_id, reporterName: request.reporter_name, reporterContact: request.reporter_contact, description: request.description, reportedDate: request.reported_date, status: request.status, warrantyCoverage: request.warranty_coverage, notes: request.notes });
+  }
 
   const request = maintenanceRequests.find(m => m.id === id);
   if (!request) {
@@ -3972,8 +4402,16 @@ app.put("/api/consortium/complaints/:id", (req: Request, res: Response) => {
 });
 
 // 14. Create Public Tender on Marketplace
-app.post("/api/tenders", (req: Request, res: Response) => {
+app.post("/api/tenders", async (req: Request, res: Response) => {
   const tendData = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    if (!tendData.projectId || !tendData.title || !tendData.category) return res.status(400).json({ error: "Faltan datos de la licitación" });
+    const { count } = await supabaseAdmin.from("public_tenders").select("id", { count: "exact", head: true }).eq("tenant_id", tenantId);
+    const { data: tender, error } = await supabaseAdmin.from("public_tenders").insert({ tenant_id: tenantId, project_id: tendData.projectId, code: tendData.code || `LIC-${String((count || 0) + 1).padStart(4, "0")}`, title: tendData.title, description: tendData.description || null, deadline: tendData.deadline || new Date(Date.now() + 30 * 86400000).toISOString(), category: tendData.category, status: "OPEN", bids: [] }).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json({ id: tender.id, tenantId: tender.tenant_id, projectId: tender.project_id, code: tender.code, title: tender.title, description: tender.description, deadline: tender.deadline, category: tender.category, status: tender.status, bids: tender.bids || [] });
+  }
   if (!tendData.tenantId || !tendData.projectId || !tendData.title || !tendData.category) {
     return res.status(400).json({ error: "Missing required tender fields" });
   }
@@ -3996,8 +4434,18 @@ app.post("/api/tenders", (req: Request, res: Response) => {
 });
 
 // 15. Submit Supplier Bid on Public Tender
-app.post("/api/marketplace/bids", (req: Request, res: Response) => {
+app.post("/api/marketplace/bids", async (req: Request, res: Response) => {
   const { tenderId, supplierId, amount, currency, deliveryWeeks, notes } = req.body;
+  if (supabaseAdmin) {
+    const user = await getRequestAuthUser(req); if (!user) return res.status(401).json({ error: "Sesión requerida" });
+    const { data: membership } = await supabaseAdmin.from("supplier_members").select("supplier_id").eq("user_id", user.id).eq("active", true).single();
+    if (!membership) return res.status(403).json({ error: "Proveedor no habilitado" });
+    const { data: tender } = await supabaseAdmin.from("public_tenders").select("*").eq("id", tenderId).eq("status", "OPEN").single();
+    if (!tender) return res.status(404).json({ error: "Licitación no encontrada" });
+    const bids = Array.isArray(tender.bids) ? tender.bids : []; const bid = { id: randomUUID(), supplierId: membership.supplier_id, amount: Number(amount), currency: currency || "USD", deliveryWeeks: Number(deliveryWeeks || 0), notes: notes || "", status: "PENDING" };
+    const { error } = await supabaseAdmin.from("public_tenders").update({ bids: [...bids, bid] }).eq("id", tenderId);
+    if (error) return res.status(400).json({ error: error.message }); return res.status(201).json(bid);
+  }
   if (!tenderId || !supplierId || !amount) {
     return res.status(400).json({ error: "Missing required bid details" });
   }
@@ -4025,8 +4473,24 @@ app.post("/api/marketplace/bids", (req: Request, res: Response) => {
 });
 
 // 16. Award Public Tender Bid
-app.put("/api/tenders/:tenderId/award/:bidId", (req: Request, res: Response) => {
+app.put("/api/tenders/:tenderId/award/:bidId", async (req: Request, res: Response) => {
   const { tenderId, bidId } = req.params;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (supabaseAdmin && tenantId) {
+    const { data: tender } = await supabaseAdmin.from("public_tenders").select("*").eq("id", tenderId).eq("tenant_id", tenantId).single();
+    if (!tender) return res.status(404).json({ error: "Licitación no encontrada" });
+    const bids = Array.isArray(tender.bids) ? tender.bids : []; const winningBid = bids.find((bid: any) => bid.id === bidId);
+    if (!winningBid) return res.status(404).json({ error: "Oferta no encontrada" });
+    const updatedBids = bids.map((bid: any) => ({ ...bid, status: bid.id === bidId ? "ACCEPTED" : "REJECTED" }));
+    const { data: updatedTender, error } = await supabaseAdmin.from("public_tenders").update({ status: "AWARDED", bids: updatedBids }).eq("id", tenderId).select("*").single();
+    if (error) return res.status(400).json({ error: error.message });
+    const { count } = await supabaseAdmin.from("purchase_requests").select("id", { count: "exact", head: true }).eq("tenant_id", tenantId);
+    const { data: order, error: orderError } = await supabaseAdmin.from("purchase_requests").insert({ tenant_id: tenantId, project_id: tender.project_id, code: `NP-${String((count || 0) + 1).padStart(4, "0")}`, title: `Contrato Adjudicado: ${tender.title}`, status: "ORDERED", requested_by: "Sistema de Licitaciones", required_date: new Date(Date.now() + Number(winningBid.deliveryWeeks || 0) * 7 * 86400000).toISOString().split("T")[0], estimated_total: Number(winningBid.amount), currency: winningBid.currency }).select("*").single();
+    if (orderError) return res.status(400).json({ error: orderError.message });
+    const { error: itemError } = await supabaseAdmin.from("purchase_items").insert({ purchase_request_id: order.id, description: `Suministro adjudicado en licitación ${tender.code}: ${tender.title}`, quantity: 1, unit: "Global", estimated_price: Number(winningBid.amount), actual_price: Number(winningBid.amount), received_quantity: 0 });
+    if (itemError) { await supabaseAdmin.from("purchase_requests").delete().eq("id", order.id); return res.status(400).json({ error: itemError.message }); }
+    return res.json({ tender: { ...updatedTender, bids: updatedBids }, purchaseOrder: { id: order.id, tenantId, projectId: order.project_id, code: order.code, title: order.title, status: order.status, requestedBy: order.requested_by, requiredDate: order.required_date, estimatedTotal: Number(order.estimated_total), currency: order.currency } });
+  }
 
   const tender = publicTenders.find(t => t.id === tenderId);
   if (!tender) {
@@ -4078,11 +4542,25 @@ app.put("/api/tenders/:tenderId/award/:bidId", (req: Request, res: Response) => 
 
 // 17. OCR Document Upload & Gemini Extraction Endpoint (Section 11.6)
 app.post("/api/ocr", async (req: Request, res: Response) => {
-  const { tenantId, fileData, fileName, mimeType } = req.body;
+  const { fileData, fileName, mimeType } = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
 
   if (!tenantId || !fileData) {
     return res.status(400).json({ error: "Missing required fields tenantId and fileData" });
   }
+
+  const saveOcrResult = async (document: OcrDocument) => {
+    if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no está configurado" });
+    const cleanBase64 = String(fileData).replace(/^data:[^;]+;base64,/, "");
+    const extension = mimeType === "application/pdf" ? "pdf" : mimeType === "image/jpeg" ? "jpg" : mimeType === "image/webp" ? "webp" : "png";
+    const objectPath = `${tenantId}/ocr/${randomUUID()}.${extension}`;
+    const upload = await supabaseAdmin.storage.from("project-documents").upload(objectPath, Buffer.from(cleanBase64, "base64"), { contentType: mimeType || "application/octet-stream", upsert: false });
+    if (upload.error) return res.status(400).json({ error: upload.error.message });
+    const categoryId = document.categoryId && /^[0-9a-f-]{36}$/i.test(document.categoryId) ? document.categoryId : null;
+    const { data: saved, error } = await supabaseAdmin.from("ocr_documents").insert({ tenant_id: tenantId, project_id: document.projectId || null, file_name: document.fileName, file_url: objectPath, document_date: document.date || null, issuer: document.issuer || null, document_number: document.documentNumber || null, amount: document.amount ?? null, tax_amount: document.taxAmount ?? null, currency: document.currency || null, category_id: categoryId, confidence: document.confidence, status: document.status, raw_text: document.rawText || null }).select("*").single();
+    if (error) { await supabaseAdmin.storage.from("project-documents").remove([objectPath]); return res.status(400).json({ error: error.message }); }
+    return res.status(200).json({ id: saved.id, tenantId: saved.tenant_id, projectId: saved.project_id, fileName: saved.file_name, fileUrl: saved.file_url, date: saved.document_date, issuer: saved.issuer, documentNumber: saved.document_number, amount: saved.amount === null ? undefined : Number(saved.amount), taxAmount: saved.tax_amount === null ? undefined : Number(saved.tax_amount), currency: saved.currency, categoryId: saved.category_id, confidence: Number(saved.confidence), status: saved.status, rawText: saved.raw_text });
+  };
 
   console.log(`Processing OCR Request for file: ${fileName || "unnamed"} (${mimeType || "unknown IANA"})`);
 
@@ -4215,8 +4693,7 @@ Respond ONLY with valid JSON containing:
         rawText: parsed.rawText || "Parsed via Gemini API"
       };
 
-      ocrDocuments.unshift(ocrDocResult);
-      return res.status(200).json(ocrDocResult);
+      return saveOcrResult(ocrDocResult);
 
     } catch (error: any) {
       console.error("Gemini OCR extraction failed, rolling back to simulated fallback:", error);
@@ -4228,8 +4705,7 @@ Respond ONLY with valid JSON containing:
         ...simulated,
         status: "PENDING_VALIDATION"
       };
-      ocrDocuments.unshift(ocrDocResult);
-      return res.status(200).json(ocrDocResult);
+      return saveOcrResult(ocrDocResult);
     }
   } else {
     // If Gemini not configured, return high-fidelity simulation
@@ -4241,17 +4717,23 @@ Respond ONLY with valid JSON containing:
       ...simulated,
       status: "PENDING_VALIDATION"
     };
-    ocrDocuments.unshift(ocrDocResult);
-    return res.status(200).json(ocrDocResult);
+    return saveOcrResult(ocrDocResult);
   }
 });
 
 // 18. Historical Budget Projection Helper Endpoint (Section 11.2)
 app.post("/api/budget-helper", async (req: Request, res: Response) => {
   const { projectId, comProjects, surfaceM2, estimatedCostPerM2 } = req.body;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
 
   if (!projectId || !surfaceM2 || !estimatedCostPerM2) {
     return res.status(400).json({ error: "Missing required simulation fields" });
+  }
+  if (supabaseAdmin && tenantId) {
+    const { data: project } = await supabaseAdmin.from("projects").select("construction_type").eq("id", projectId).eq("tenant_id", tenantId).single();
+    if (!project) return res.status(404).json({ error: "Proyecto no encontrado" });
+    const template = getBudgetTemplate(project.construction_type); const templateName = template === HOUSE_BUDGET_TEMPLATE ? "Casa" : "Edificio"; const totalCost = Number(surfaceM2) * Number(estimatedCostPerM2);
+    return res.status(200).json(template.map((item, index) => ({ code: String(index + 1).padStart(2, "0"), name: item.name, suggestedIncidence: item.incidence, suggestedAmount: Number((totalCost * item.incidence / 100).toFixed(2)), justification: `Incidencia de referencia para ${templateName} según Tr3sR Contabilidad v12.0.` })));
   }
 
   const referenceProject = projects.find(project => project.id === projectId);
