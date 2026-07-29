@@ -30,6 +30,69 @@ interface DraftLine {
   subitems: BudgetSubitem[];
 }
 
+type BudgetDivision = "A" | "B" | "C";
+
+const HOUSE_DIVISIONS: Record<BudgetDivision, string[]> = {
+  A: [
+    "ALBAÑILERIA MDO", "ALBAÑILERIA MATERIALES", "ESTRUCTURA HORMIGON",
+    "CARPINTERIA ALUMINIO", "ESTRUCTURA ACERO", "GASTOS MUNICIPALES",
+    "PISOS Y REVESTIMIENTOS", "JARDINERIA", "ELECTRICIDAD MATERIALES",
+    "PLOMERIA SANITARIOS", "PINTURA MDO", "EXCAVACION", "COCINA MUEBLES",
+    "ESTRUCTURA MADERAS"
+  ],
+  B: [
+    "ELECTRICIDAD MDO", "CARPINTERIA PUERTAS", "COCINA MESADAS", "PLOMERIA MDO",
+    "OBRA GENERALES", "YESERIA MDO", "AMOBLAMIENTOS", "CALEFACCION", "PISCINA",
+    "PINTURA MATERIALES"
+  ],
+  C: [
+    "COCINA ARTEFACTOS", "PLOMERIA MATERIALES", "YESERIA MATERIALES", "HERRAMIENTAS",
+    "AIRE ACONDICIONADO", "ZINGUERIA", "PLOMERIA TERMOTANQUES", "ESTRUCTURA GENERALES",
+    "HERRERIA", "PLOMERIA BOMBAS", "CERRAJERIA"
+  ]
+};
+
+const BUILDING_DIVISIONS: Record<BudgetDivision, string[]> = {
+  A: [
+    "PERSONAL SUELDOS", "ALBAÑILERIA MATERIALES", "ESTRUCTURA HORMIGON",
+    "IMPUESTOS GENERALES", "ESTRUCTURA ACERO", "GASTOS MUNICIPALES",
+    "CARPINTERIA ALUMINIO", "PLOMERIA MATERIALES", "ASCENSOR", "PINTURA MDO",
+    "PISOS Y REVESTIMIENTOS", "PLOMERIA MDO", "ELECTRICIDAD MDO",
+    "ELECTRICIDAD MATERIALES", "PLOMERIA SANITARIOS", "HERRERIA"
+  ],
+  B: [
+    "EMPRESA GENERALES", "HERRAMIENTAS", "CARPINTERIA PUERTAS", "COCINA ARTEFACTOS",
+    "OBRA GENERALES", "COCINA MUEBLES", "EXCAVACION", "YESERIA MDO",
+    "PINTURA MATERIALES", "HONORARIOS ESCRIBANIA", "ESTRUCTURA MADERAS",
+    "PLOMERIA BOMBAS", "COMERCIALIZACION", "AMOBLAMIENTOS", "PLOMERIA TERMOTANQUES"
+  ],
+  C: [
+    "HIGIENE Y SEGURIDAD", "RECLAMOS", "ZINGUERIA", "CERRAJERIA", "YESERIA MATERIALES",
+    "DEMOLICION", "HONORARIOS CONTADURIA", "AIRE ACONDICIONADO", "JARDINERIA",
+    "COCINA MESADAS", "ESTRUCTURA GENERALES", "HONORARIOS ABOGACIA", "CALEFACCION"
+  ]
+};
+
+const normalizeBudgetName = (value: string) => value
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toUpperCase()
+  .trim();
+
+const getBudgetDivision = (line: BudgetLine, constructionType?: string): BudgetDivision => {
+  const isHouse = (constructionType || "").toLocaleLowerCase("es").includes("casa");
+  const divisions = isHouse ? HOUSE_DIVISIONS : BUILDING_DIVISIONS;
+  const normalizedName = normalizeBudgetName(line.name);
+  const matchingDivision = (Object.keys(divisions) as BudgetDivision[]).find(division =>
+    divisions[division].some(name => normalizeBudgetName(name) === normalizedName)
+  );
+  if (matchingDivision) return matchingDivision;
+
+  const position = Number.parseInt(line.code, 10);
+  if (isHouse) return position <= 14 ? "A" : position <= 24 ? "B" : "C";
+  return position <= 16 ? "A" : position <= 31 ? "B" : "C";
+};
+
 const emptySubitem = (): BudgetSubitem => ({
   id: `bsi-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   description: "",
@@ -64,6 +127,15 @@ export default function BudgetPanel({
   const totalBudget = projectLines.reduce((sum, line) => sum + line.amount, 0);
   const totalIncidence = projectLines.reduce((sum, line) => sum + line.incidence, 0);
   const incidenceDifference = Number((100 - totalIncidence).toFixed(2));
+  const divisions = useMemo(() => (["A", "B", "C"] as BudgetDivision[]).map(division => {
+    const lines = projectLines.filter(line => getBudgetDivision(line, activeProject?.constructionType) === division);
+    return {
+      division,
+      lines,
+      amount: lines.reduce((sum, line) => sum + line.amount, 0),
+      incidence: lines.reduce((sum, line) => sum + line.incidence, 0)
+    };
+  }), [activeProject?.constructionType, projectLines]);
 
   const startEditing = (line: BudgetLine) => {
     setEditingLineId(line.id);
@@ -239,7 +311,29 @@ export default function BudgetPanel({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {projectLines.map(line => {
+                  {divisions.map(group => (
+                    <Fragment key={`division-${group.division}`}>
+                      <tr className="border-y border-slate-200 bg-slate-100/90">
+                        <td colSpan={3} className="px-2 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-slate-800 text-xs font-bold text-white">
+                              {group.division}
+                            </span>
+                            <span className="font-bold text-slate-800">Categoría {group.division}</span>
+                            <span className="text-xs text-slate-500">{group.lines.length} rubros</span>
+                          </div>
+                        </td>
+                        <td className="px-2 py-2.5 text-right font-mono font-bold text-slate-700">
+                          {group.incidence.toFixed(2)}%
+                        </td>
+                        <td className="px-2 py-2.5 text-right font-mono font-bold text-slate-900">
+                          {activeProject.baseCurrency} {group.amount.toLocaleString()}
+                        </td>
+                        <td colSpan={2} className="px-2 py-2.5 text-right text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                          Subtotal categoría
+                        </td>
+                      </tr>
+                      {group.lines.map(line => {
                     const isEditing = editingLineId === line.id && draft;
                     const isExpanded = expandedLines.has(line.id);
                     const visibleSubitems = isEditing ? draft.subitems : (line.subitems || []);
@@ -419,7 +513,9 @@ export default function BudgetPanel({
                         )}
                       </Fragment>
                     );
-                  })}
+                      })}
+                    </Fragment>
+                  ))}
                 </tbody>
               </table>
             </div>
