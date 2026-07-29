@@ -149,7 +149,11 @@ export default function App() {
   const fetchTenantState = async (tenantId: string) => {
     setIsLoading(true);
     try {
-      const response = await fetch(`/api/state?tenantId=${tenantId}`);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const response = await fetch(`/api/state?tenantId=${encodeURIComponent(tenantId)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       if (!response.ok) {
         throw new Error("Falla al recuperar los datos del servidor.");
       }
@@ -743,6 +747,13 @@ export default function App() {
             ? ["projects", "treasury", "budgets", "procurement", "sales", "consortium", "ocr", "marketplace", "tenant_settings"]
             : (access.tenant.tenant_member_modules || []).filter((module: any) => module.can_read).map((module: any) => module.module_key);
           setActiveTenantId(tenantId);
+          if (!isSupplier && access.tenantProfile) {
+            setTenantProfile(access.tenantProfile);
+            localStorage.setItem(`tenant_id_${email}`, tenantId);
+            localStorage.setItem(`tenant_name_${tenantId}`, access.tenantProfile.name || "");
+            localStorage.setItem(`tenant_cuit_${tenantId}`, access.tenantProfile.cuit || "");
+            localStorage.setItem(`tenant_currency_${tenantId}`, access.tenantProfile.defaultCurrency || Currency.ARS);
+          }
           setSessionUser({
             email,
             name: userName,
@@ -1750,6 +1761,7 @@ export default function App() {
                 tenant={tenantProfile}
                 accounts={accounts}
                 userEmail={userEmail}
+                authenticatedRole={sessionUser?.role}
                 onRefresh={() => fetchTenantState(activeTenantId)}
               />
             )}

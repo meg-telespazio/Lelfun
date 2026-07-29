@@ -25,16 +25,19 @@ interface TenantProfilePanelProps {
   tenant: Tenant | null;
   accounts: FinancialAccount[];
   userEmail: string;
+  authenticatedRole?: string;
   onRefresh: () => void;
 }
 
-export default function TenantProfilePanel({ tenant, accounts, userEmail, onRefresh }: TenantProfilePanelProps) {
+export default function TenantProfilePanel({ tenant, accounts, userEmail, authenticatedRole, onRefresh }: TenantProfilePanelProps) {
   // Check if current user is admin
-  const userRole = tenant?.activeUsers?.find(
+  const profileRole = tenant?.activeUsers?.find(
     u => u.email.toLowerCase() === userEmail.toLowerCase()
-  )?.role || "Colaborador";
+  )?.role;
+  const userRole = authenticatedRole || profileRole || "Colaborador";
 
-  const isAdmin = userRole.toLowerCase().includes("admin") || userEmail.toLowerCase() === "mariano.telespazio@gmail.com";
+  const normalizedRole = userRole.toLowerCase();
+  const isAdmin = ["owner", "admin"].includes(normalizedRole) || normalizedRole.includes("admin") || userEmail.toLowerCase() === "mariano.telespazio@gmail.com";
 
   // Form states
   const [logoUrl, setLogoUrl] = useState(tenant?.logoUrl || "");
