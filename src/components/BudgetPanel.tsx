@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   Save,
+  Search,
   Trash2,
   X
 } from "lucide-react";
@@ -110,6 +111,8 @@ export default function BudgetPanel({
   const [draft, setDraft] = useState<DraftLine | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [collapsedDivisions, setCollapsedDivisions] = useState<Set<BudgetDivision>>(new Set());
 
   const projectLines = useMemo(
     () => activeProject
@@ -122,20 +125,41 @@ export default function BudgetPanel({
     setEditingLineId(null);
     setDraft(null);
     setErrorMsg("");
+    setSearchQuery("");
+    setCollapsedDivisions(new Set());
   }, [activeProject?.id]);
 
   const totalBudget = projectLines.reduce((sum, line) => sum + line.amount, 0);
   const totalIncidence = projectLines.reduce((sum, line) => sum + line.incidence, 0);
   const incidenceDifference = Number((100 - totalIncidence).toFixed(2));
+  const normalizedSearch = normalizeBudgetName(searchQuery);
   const divisions = useMemo(() => (["A", "B", "C"] as BudgetDivision[]).map(division => {
     const lines = projectLines.filter(line => getBudgetDivision(line, activeProject?.constructionType) === division);
+    const visibleLines = normalizedSearch
+      ? lines.filter(line => normalizeBudgetName([
+          line.code,
+          line.name,
+          line.notes || "",
+          ...(line.subitems || []).flatMap(item => [item.description, item.notes || ""])
+        ].join(" ")).includes(normalizedSearch))
+      : lines;
     return {
       division,
       lines,
+      visibleLines,
       amount: lines.reduce((sum, line) => sum + line.amount, 0),
       incidence: lines.reduce((sum, line) => sum + line.incidence, 0)
     };
-  }), [activeProject?.constructionType, projectLines]);
+  }), [activeProject?.constructionType, normalizedSearch, projectLines]);
+
+  const toggleDivision = (division: BudgetDivision) => {
+    setCollapsedDivisions(previous => {
+      const next = new Set(previous);
+      if (next.has(division)) next.delete(division);
+      else next.add(division);
+      return next;
+    });
+  };
 
   const startEditing = (line: BudgetLine) => {
     setEditingLineId(line.id);
@@ -297,6 +321,34 @@ export default function BudgetPanel({
               </div>
             )}
 
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative w-full sm:max-w-md">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={event => setSearchQuery(event.target.value)}
+                  placeholder="Buscar por código, rubro, nota o subítem..."
+                  className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-9 pr-9 text-sm text-slate-700 outline-none transition focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                    title="Limpiar búsqueda"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              {searchQuery && (
+                <span className="text-xs font-medium text-slate-500">
+                  {divisions.reduce((sum, group) => sum + group.visibleLines.length, 0)} rubros encontrados
+                </span>
+              )}
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-sm">
                 <thead>
@@ -311,17 +363,29 @@ export default function BudgetPanel({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {divisions.map(group => (
+                  {divisions.filter(group => !normalizedSearch || group.visibleLines.length > 0).map(group => {
+                    const isCollapsed = collapsedDivisions.has(group.division);
+                    return (
                     <Fragment key={`division-${group.division}`}>
                       <tr className="border-y border-slate-200 bg-slate-100/90">
                         <td colSpan={3} className="px-2 py-2.5">
-                          <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleDivision(group.division)}
+                            className="flex w-full items-center gap-2 text-left"
+                            aria-expanded={!isCollapsed}
+                          >
+                            {isCollapsed
+                              ? <ChevronRight className="h-4 w-4 text-slate-500" />
+                              : <ChevronDown className="h-4 w-4 text-slate-500" />}
                             <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-slate-800 text-xs font-bold text-white">
                               {group.division}
                             </span>
                             <span className="font-bold text-slate-800">Categoría {group.division}</span>
-                            <span className="text-xs text-slate-500">{group.lines.length} rubros</span>
-                          </div>
+                            <span className="text-xs text-slate-500">
+                              {normalizedSearch ? `${group.visibleLines.length} de ${group.lines.length}` : group.lines.length} rubros
+                            </span>
+                          </button>
                         </td>
                         <td className="px-2 py-2.5 text-right font-mono font-bold text-slate-700">
                           {group.incidence.toFixed(2)}%
@@ -333,7 +397,7 @@ export default function BudgetPanel({
                           Subtotal categoría
                         </td>
                       </tr>
-                      {group.lines.map(line => {
+                      {!isCollapsed && group.visibleLines.map(line => {
                     const isEditing = editingLineId === line.id && draft;
                     const isExpanded = expandedLines.has(line.id);
                     const visibleSubitems = isEditing ? draft.subitems : (line.subitems || []);
@@ -515,7 +579,8 @@ export default function BudgetPanel({
                     );
                       })}
                     </Fragment>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
