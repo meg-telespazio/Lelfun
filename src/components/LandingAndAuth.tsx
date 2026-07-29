@@ -373,7 +373,6 @@ export default function LandingAndAuth({
       }
 
       // Save credentials in simulated localStorage for browser persistence / offline testing bypass
-      localStorage.setItem(`lelf_pass_${regEmail}`, regPassword);
       localStorage.setItem(`lelf_name_${regEmail}`, userFullName);
       localStorage.setItem(`tenant_id_${regEmail}`, generatedTenantId);
       localStorage.setItem(
