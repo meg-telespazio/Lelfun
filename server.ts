@@ -1416,10 +1416,29 @@ app.get("/api/auth/access-context", async (req: Request, res: Response) => {
     const { data: license } = await supabaseAdmin.from("tenant_licenses").select("*,subscription_plans(*)").eq("tenant_id", tenantMembership.tenant_id).maybeSingle();
     const blocked = !license || ["PAST_DUE", "SUSPENDED", "CANCELLED", "EXPIRED"].includes(license.status) || new Date(license.next_due_date) < new Date(new Date().toISOString().slice(0, 10));
     if (blocked && license?.status === "ACTIVE") await supabaseAdmin.from("tenant_licenses").update({ status: "SUSPENDED", suspended_at: new Date().toISOString(), suspension_reason: "Licencia vencida" }).eq("id", license.id);
-    const tenantDetailsResult = await supabaseAdmin.from("tenants").select("name,legal_name,tax_id,phone").eq("id", tenantMembership.tenant_id).single();
+    const tenantDetailsResult = await supabaseAdmin.from("tenants").select("id,name,legal_name,tax_id,phone,legal_address,commercial_address,company_type,default_currency,logo_url").eq("id", tenantMembership.tenant_id).single();
     const databaseTenant = tenantDetailsResult.data;
     const localTenant = tenants.find(item => item.cuit && databaseTenant?.tax_id && item.cuit === databaseTenant.tax_id);
-    return res.json({ environment: "TENANT", userId: user.id, email: user.email, tenant: { ...tenantMembership, tenants: databaseTenant, local_tenant_id: localTenant?.id || tenantMembership.tenant_id }, license: { ...license, blocked } });
+    const tenantProfile = databaseTenant ? {
+      id: databaseTenant.id,
+      name: databaseTenant.name,
+      nombreFantasia: databaseTenant.name,
+      razonSocial: databaseTenant.legal_name,
+      cuit: databaseTenant.tax_id,
+      phone: databaseTenant.phone,
+      legalAddress: databaseTenant.legal_address,
+      commercialAddress: databaseTenant.commercial_address,
+      companyType: databaseTenant.company_type,
+      defaultCurrency: databaseTenant.default_currency,
+      logoUrl: databaseTenant.logo_url,
+      activeUsers: [{
+        name: user.user_metadata?.nombre || user.email,
+        email: user.email,
+        role: ["owner", "admin"].includes(tenantMembership.role) ? "Administrador General" : tenantMembership.role,
+        active: true
+      }]
+    } : null;
+    return res.json({ environment: "TENANT", userId: user.id, email: user.email, tenant: { ...tenantMembership, tenants: databaseTenant, local_tenant_id: localTenant?.id || tenantMembership.tenant_id }, tenantProfile, license: { ...license, blocked } });
   }
   return res.status(403).json({ error: "El usuario no tiene un entorno habilitado" });
 });
@@ -2520,7 +2539,7 @@ app.get("/api/exchange-rates/history", (req: Request, res: Response) => {
 
 // 3. Central Synchronization State Endpoint (returns isolated tenant data)
 app.get("/api/state", async (req: Request, res: Response) => {
-  const tenantId = req.query.tenantId as string;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId || req.query.tenantId as string;
   if (!tenantId) {
     return res.status(400).json({ error: "Missing tenantId parameter" });
   }
@@ -2587,7 +2606,32 @@ app.get("/api/state", async (req: Request, res: Response) => {
   // Global tenders where the active tenant is the creator, or all public tenders
   const tenantTenders = publicTenders.filter(t => t.tenantId === tenantId);
 
-  const tenantProfile = tenants.find(t => t.id === tenantId) || tenants[0];
+  let tenantProfile = tenants.find(t => t.id === tenantId) || null;
+  if (supabaseAdmin) {
+    const { data: databaseTenant } = await supabaseAdmin
+      .from("tenants")
+      .select("id,name,legal_name,tax_id,phone,legal_address,commercial_address,company_type,default_currency,logo_url")
+      .eq("id", tenantId)
+      .maybeSingle();
+    if (databaseTenant) {
+      tenantProfile = {
+        id: databaseTenant.id,
+        name: databaseTenant.name,
+        nombreFantasia: databaseTenant.name,
+        razonSocial: databaseTenant.legal_name,
+        cuit: databaseTenant.tax_id,
+        phone: databaseTenant.phone,
+        legalAddress: databaseTenant.legal_address,
+        commercialAddress: databaseTenant.commercial_address,
+        companyType: databaseTenant.company_type,
+        defaultCurrency: databaseTenant.default_currency,
+        logoUrl: databaseTenant.logo_url,
+        enabledCurrencies: [Currency.ARS, Currency.USD],
+        activeUsers: []
+      } as Tenant;
+    }
+  }
+  if (!tenantProfile) tenantProfile = tenants[0];
   let currentOfficialRate: DailyOfficialExchangeRate | null = null;
   try {
     currentOfficialRate = await getDailyOfficialRate();
