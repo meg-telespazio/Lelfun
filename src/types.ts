@@ -137,6 +137,11 @@ export interface ProjectCertification {
   physicalProgress: number;
   financialProgress: number;
   certifiedBy: string;
+  taskId?: string;
+  taskName?: string;
+  amount?: number;
+  invoiceNumber?: string;
+  receiptNumber?: string;
   notes?: string;
 }
 
@@ -146,6 +151,7 @@ export interface ProjectTask {
   startWeek: number;
   endWeek: number;
   progress: number;
+  parentTaskId?: string;
 }
 
 export interface FinancialAccount {
