@@ -351,6 +351,12 @@ export default function App() {
     return projects.find(p => p.id === selectedProjectId) || projects[0] || null;
   }, [projects, selectedProjectId]);
 
+  const orderedProjectTasks = useMemo(() => {
+    const tasks = activeProject?.schedule || [];
+    const roots = tasks.filter(task => !task.parentTaskId);
+    return roots.flatMap(root => [root, ...tasks.filter(task => task.parentTaskId === root.id)]);
+  }, [activeProject?.schedule]);
+
   // Lifecycle/Editing states
   const [editingProjectDetails, setEditingProjectDetails] = useState(false);
   const [showingTaskPlanner, setShowingTaskPlanner] = useState(false);
@@ -371,6 +377,9 @@ export default function App() {
   const [newTaskStart, setNewTaskStart] = useState("1");
   const [newTaskEnd, setNewTaskEnd] = useState("4");
   const [newTaskProgress, setNewTaskProgress] = useState("0");
+  const [newTaskParentId, setNewTaskParentId] = useState("");
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [taskPlannerError, setTaskPlannerError] = useState("");
   const [isGeneratingSchedule, setIsGeneratingSchedule] = useState(false);
 
   // Certifier fields
@@ -378,7 +387,12 @@ export default function App() {
   const [certFinancial, setCertFinancial] = useState("0");
   const [certDate, setCertDate] = useState(new Date().toISOString().split("T")[0]);
   const [certCertifiedBy, setCertCertifiedBy] = useState("Director de Obra");
+  const [certTaskId, setCertTaskId] = useState("");
+  const [certAmount, setCertAmount] = useState("");
+  const [certInvoiceNumber, setCertInvoiceNumber] = useState("");
+  const [certReceiptNumber, setCertReceiptNumber] = useState("");
   const [certNotes, setCertNotes] = useState("");
+  const [certError, setCertError] = useState("");
 
   // Step definitions based on user request:
   // Nuevo Proyecto -> Presupuesto -> Plan (cronograma de tareas) -> Ejecución -> Cierre
@@ -535,29 +549,30 @@ export default function App() {
     e.preventDefault();
     if (!activeProject || !newTaskName) return;
 
-    const currentSchedule = activeProject.schedule || [];
-    const newTask = {
-      id: `task-${Date.now()}`,
-      taskName: newTaskName,
-      startWeek: Number(newTaskStart),
-      endWeek: Number(newTaskEnd),
-      progress: Number(newTaskProgress)
-    };
-
-    const updatedSchedule = [...currentSchedule, newTask];
-
+    setTaskPlannerError("");
     try {
-      const response = await fetch(`/api/projects/${activeProject.id}`, {
-        method: "PUT",
+      const response = await fetch(`/api/projects/${activeProject.id}/tasks${editingTaskId ? `/${editingTaskId}` : ""}`, {
+        method: editingTaskId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ schedule: updatedSchedule })
+        body: JSON.stringify({
+          taskName: newTaskName,
+          startWeek: Number(newTaskStart),
+          endWeek: Number(newTaskEnd),
+          progress: Number(newTaskProgress),
+          parentTaskId: editingTaskId ? undefined : (newTaskParentId || undefined)
+        })
       });
       if (response.ok) {
         setNewTaskName("");
         setNewTaskStart("1");
         setNewTaskEnd("4");
         setNewTaskProgress("0");
+        setNewTaskParentId("");
+        setEditingTaskId(null);
         fetchTenantState(activeTenantId);
+      } else {
+        const payload = await response.json().catch(() => null);
+        setTaskPlannerError(payload?.error || "No se pudo guardar la tarea.");
       }
     } catch (err) {
       console.error("Error al agregar tarea:", err);
@@ -566,26 +581,45 @@ export default function App() {
 
   const handleDeleteTask = async (taskId: string) => {
     if (!activeProject) return;
-    const updatedSchedule = (activeProject.schedule || []).filter(t => t.id !== taskId);
-
+    setTaskPlannerError("");
     try {
-      const response = await fetch(`/api/projects/${activeProject.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ schedule: updatedSchedule })
-      });
+      const response = await fetch(`/api/projects/${activeProject.id}/tasks/${taskId}`, { method: "DELETE" });
       if (response.ok) {
         fetchTenantState(activeTenantId);
+      } else {
+        const payload = await response.json().catch(() => null);
+        setTaskPlannerError(payload?.error || "No se pudo eliminar la tarea.");
       }
     } catch (err) {
       console.error("Error al eliminar tarea:", err);
     }
   };
 
+  const startEditingTask = (task: NonNullable<Project["schedule"]>[number]) => {
+    setEditingTaskId(task.id);
+    setNewTaskName(task.taskName);
+    setNewTaskStart(String(task.startWeek));
+    setNewTaskEnd(String(task.endWeek));
+    setNewTaskProgress(String(task.progress));
+    setNewTaskParentId(task.parentTaskId || "");
+    setTaskPlannerError("");
+  };
+
+  const startAddingSubtask = (parentTaskId: string) => {
+    setEditingTaskId(null);
+    setNewTaskName("");
+    setNewTaskStart("1");
+    setNewTaskEnd("4");
+    setNewTaskProgress("0");
+    setNewTaskParentId(parentTaskId);
+    setTaskPlannerError("");
+  };
+
   const handleCertifyProgress = async (e: FormEvent) => {
     e.preventDefault();
     if (!activeProject) return;
 
+    setCertError("");
     try {
       const response = await fetch(`/api/projects/${activeProject.id}/certifications`, {
         method: "POST",
@@ -595,13 +629,24 @@ export default function App() {
           physicalProgress: Number(certPhysical),
           financialProgress: Number(certFinancial),
           certifiedBy: certCertifiedBy,
+          taskId: certTaskId,
+          amount: certAmount,
+          invoiceNumber: certInvoiceNumber,
+          receiptNumber: certReceiptNumber,
           notes: certNotes
         })
       });
       if (response.ok) {
         setShowingProgressCertifier(false);
+        setCertTaskId("");
+        setCertAmount("");
+        setCertInvoiceNumber("");
+        setCertReceiptNumber("");
         setCertNotes("");
         fetchTenantState(activeTenantId);
+      } else {
+        const payload = await response.json().catch(() => null);
+        setCertError(payload?.error || "No se pudo registrar la certificación.");
       }
     } catch (err) {
       console.error("Error al certificar avance:", err);
@@ -1480,8 +1525,10 @@ export default function App() {
                         <div className="flex justify-between items-center">
                           <span className="font-extrabold text-[10px] text-slate-500 uppercase tracking-wide">Historial de Certificaciones</span>
                           <button
-                            onClick={() => setShowingProgressCertifier(true)}
-                            className="text-amber-600 hover:text-amber-700 font-bold text-[10px] flex items-center gap-0.5"
+                            onClick={() => activeProject.status === ProjectStatus.IN_PROGRESS && setShowingProgressCertifier(true)}
+                            disabled={activeProject.status !== ProjectStatus.IN_PROGRESS}
+                            title={activeProject.status !== ProjectStatus.IN_PROGRESS ? "La obra debe estar en ejecución para certificar" : "Registrar certificación"}
+                            className="text-amber-600 hover:text-amber-700 disabled:text-slate-300 disabled:cursor-not-allowed font-bold text-[10px] flex items-center gap-0.5"
                           >
                             + Nueva Certificación
                           </button>
@@ -1499,6 +1546,16 @@ export default function App() {
                                   <span>Físico: <strong className="text-slate-950">{cert.physicalProgress}%</strong></span>
                                   <span>Financiero: <strong className="text-slate-950">{cert.financialProgress}%</strong></span>
                                 </div>
+                                <p className="text-[10px] font-semibold text-slate-600">
+                                  Tarea: {cert.taskName || "Certificación histórica sin tarea asociada"}
+                                </p>
+                                {(cert.amount !== undefined || cert.invoiceNumber || cert.receiptNumber) && (
+                                  <div className="flex flex-wrap gap-x-3 gap-y-1 border-t pt-1 text-[10px] text-slate-500">
+                                    {cert.amount !== undefined && <span>Monto: <strong>{activeProject.baseCurrency} {cert.amount.toLocaleString()}</strong></span>}
+                                    {cert.invoiceNumber && <span>Factura: <strong>{cert.invoiceNumber}</strong></span>}
+                                    {cert.receiptNumber && <span>Recibo: <strong>{cert.receiptNumber}</strong></span>}
+                                  </div>
+                                )}
                                 {cert.notes && (
                                   <p className="text-[10px] text-slate-500 italic border-t pt-1 mt-1 leading-normal">
                                     "{cert.notes}"
@@ -1520,10 +1577,10 @@ export default function App() {
                       </h3>
 
                       <div className="space-y-4">
-                        {activeProject.schedule?.map(task => (
-                          <div key={task.id} className="space-y-1">
+                        {orderedProjectTasks.map(task => (
+                          <div key={task.id} className={`space-y-1 ${task.parentTaskId ? "ml-5 border-l-2 border-slate-200 pl-3" : ""}`}>
                             <div className="flex justify-between text-xs font-semibold">
-                              <span className="text-slate-800">{task.taskName}</span>
+                              <span className="text-slate-800">{task.parentTaskId && "Subtarea · "}{task.taskName}</span>
                               <span className="text-slate-500 text-[10px]">
                                 {task.progress}% • Semanas {task.startWeek} - {task.endWeek}
                               </span>
@@ -2075,27 +2132,38 @@ export default function App() {
               <div>
                 <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Tareas Actuales</h4>
                 <div className="space-y-2 max-h-48 overflow-y-auto border rounded-lg p-2 bg-slate-50">
-                  {(activeProject.schedule || []).map((task) => (
-                    <div key={task.id} className="bg-white p-2.5 rounded border flex justify-between items-center text-xs">
+                  {orderedProjectTasks.map((task) => (
+                    <div key={task.id} className={`bg-white p-2.5 rounded border flex justify-between items-center text-xs ${task.parentTaskId ? "ml-5 border-l-4 border-l-amber-300" : ""}`}>
                       <div className="flex-1 min-w-0 pr-3">
-                        <p className="font-bold text-slate-800 truncate">{task.taskName}</p>
+                        <p className="font-bold text-slate-800 truncate">{task.parentTaskId && <span className="text-amber-700">Subtarea · </span>}{task.taskName}</p>
                         <p className="text-[10px] text-slate-500 font-mono">
                           Semanas {task.startWeek} a {task.endWeek} • Avance: {task.progress}%
                         </p>
                       </div>
-                      <button
-                        onClick={() => handleDeleteTask(task.id)}
-                        className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 p-1.5 rounded transition-colors cursor-pointer shrink-0"
-                        title="Eliminar tarea"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-0.5">
+                        {!task.parentTaskId && (
+                          <button onClick={() => startAddingSubtask(task.id)} className="text-amber-700 hover:bg-amber-50 p-1.5 rounded" title="Agregar subtarea">
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <button onClick={() => startEditingTask(task)} className="text-slate-500 hover:bg-slate-100 p-1.5 rounded" title="Editar tarea">
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTask(task.id)}
+                          className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 p-1.5 rounded transition-colors cursor-pointer shrink-0"
+                          title="Eliminar tarea"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                   {(activeProject.schedule || []).length === 0 && (
                     <p className="text-center text-[11px] text-slate-400 py-4">No hay tareas en el cronograma. Agregue una abajo o use la AI para sugerir etapas.</p>
                   )}
                 </div>
+                {taskPlannerError && <p className="mt-2 rounded border border-rose-200 bg-rose-50 p-2 text-[11px] text-rose-700">{taskPlannerError}</p>}
               </div>
 
               {/* AI Scheduler Trigger */}
@@ -2130,7 +2198,19 @@ export default function App() {
 
               {/* Add task form */}
               <form onSubmit={handleAddTask} className="border-t pt-4 space-y-3">
-                <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Agregar Nueva Tarea</h4>
+                <div className="flex items-center justify-between">
+                  <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    {editingTaskId ? "Editar tarea" : newTaskParentId ? "Agregar subtarea" : "Agregar nueva tarea"}
+                  </h4>
+                  {(editingTaskId || newTaskParentId) && (
+                    <button type="button" onClick={() => { setEditingTaskId(null); setNewTaskParentId(""); setNewTaskName(""); setNewTaskProgress("0"); }} className="text-[10px] text-slate-500 hover:text-slate-800">Cancelar</button>
+                  )}
+                </div>
+                {newTaskParentId && !editingTaskId && (
+                  <p className="rounded bg-amber-50 px-2 py-1.5 text-[10px] text-amber-800">
+                    Tarea principal: {(activeProject.schedule || []).find(task => task.id === newTaskParentId)?.taskName}
+                  </p>
+                )}
                 
                 <div>
                   <label className="block text-[10px] text-slate-500 uppercase mb-1">Nombre de la Tarea</label>
@@ -2187,7 +2267,7 @@ export default function App() {
                   type="submit"
                   className="w-full bg-slate-900 hover:bg-slate-800 text-white py-2 rounded text-xs cursor-pointer font-bold mt-2"
                 >
-                  Agregar Tarea al Gantt
+                  {editingTaskId ? "Guardar cambios" : newTaskParentId ? "Agregar subtarea" : "Agregar tarea al Gantt"}
                 </button>
               </form>
             </div>
@@ -2206,9 +2286,9 @@ export default function App() {
       )}
 
       {/* Certificar Avance Modal */}
-      {showingProgressCertifier && activeProject && (
+      {showingProgressCertifier && activeProject && activeProject.status === ProjectStatus.IN_PROGRESS && (
         <div className="fixed inset-0 bg-slate-950/60 flex items-center justify-center p-4 z-50 animate-fade-in text-slate-900 text-xs font-semibold">
-          <div className="bg-white rounded-xl max-w-md w-full shadow-2xl overflow-hidden">
+          <div className="bg-white rounded-xl max-w-lg w-full shadow-2xl overflow-hidden">
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
               <h3 className="font-semibold font-display flex items-center gap-1.5">
                 <Percent className="w-4 h-4 text-amber-400" /> Registrar Certificación de Obra
@@ -2220,8 +2300,23 @@ export default function App() {
 
             <form onSubmit={handleCertifyProgress} className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
               <p className="text-[11px] text-slate-500 leading-relaxed">
-                Ingrese las certificaciones auditadas para registrar un nuevo hito de avance de obra. Esto actualizará el progreso global y guardará el historial de auditoría.
+                Seleccione una tarea con avance parcial o finalizado. La certificación actualizará el progreso global y conservará el historial de auditoría.
               </p>
+
+              <div>
+                <label className="block text-[10px] text-slate-400 uppercase mb-1">Tarea certificada</label>
+                <select value={certTaskId} onChange={(e) => setCertTaskId(e.target.value)} className="w-full border border-slate-200 rounded p-2 text-xs outline-none focus:border-amber-500" required>
+                  <option value="">Seleccione una tarea...</option>
+                  {orderedProjectTasks.filter(task => task.progress > 0).map(task => (
+                    <option key={task.id} value={task.id}>
+                      {task.parentTaskId ? "↳ " : ""}{task.taskName} · {task.progress === 100 ? "Finalizada" : `${task.progress}% finalizada`}
+                    </option>
+                  ))}
+                </select>
+                {orderedProjectTasks.every(task => task.progress <= 0) && (
+                  <p className="mt-1 text-[10px] text-amber-700">Primero edite una tarea y registre un avance superior a 0%.</p>
+                )}
+              </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -2293,6 +2388,21 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[10px] text-slate-400 uppercase mb-1">Monto opcional</label>
+                  <input type="number" min="0" step="0.01" value={certAmount} onChange={(e) => setCertAmount(e.target.value)} placeholder={activeProject.baseCurrency} className="w-full border border-slate-200 rounded p-1.5 text-xs font-mono outline-none focus:border-amber-500" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400 uppercase mb-1">Nº de factura</label>
+                  <input type="text" value={certInvoiceNumber} onChange={(e) => setCertInvoiceNumber(e.target.value)} placeholder="Opcional" className="w-full border border-slate-200 rounded p-1.5 text-xs outline-none focus:border-amber-500" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400 uppercase mb-1">Nº de recibo</label>
+                  <input type="text" value={certReceiptNumber} onChange={(e) => setCertReceiptNumber(e.target.value)} placeholder="Opcional" className="w-full border border-slate-200 rounded p-1.5 text-xs outline-none focus:border-amber-500" />
+                </div>
+              </div>
+
               <div>
                 <label className="block text-[10px] text-slate-400 uppercase mb-1">Notas / Observaciones de la Certificación</label>
                 <textarea
@@ -2303,10 +2413,13 @@ export default function App() {
                 />
               </div>
 
+              {certError && <p className="rounded border border-rose-200 bg-rose-50 p-2 text-[11px] text-rose-700">{certError}</p>}
+
               <div className="flex gap-2 pt-2">
                 <button
                   type="submit"
-                  className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2 rounded text-xs cursor-pointer font-bold"
+                  disabled={!certTaskId}
+                  className="flex-1 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white py-2 rounded text-xs cursor-pointer font-bold"
                 >
                   Registrar Certificación
                 </button>

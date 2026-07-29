@@ -2560,8 +2560,9 @@ app.get("/api/state", async (req: Request, res: Response) => {
     ]);
     if (taskResult.error || certificationResult.error) return res.status(500).json({ error: (taskResult.error || certificationResult.error)?.message });
     tenantProjects.forEach(project => {
-      project.schedule = (taskResult.data || []).filter(task => task.project_id === project.id).map(task => ({ id: task.id, taskName: task.name, startWeek: task.start_week, endWeek: task.end_week, progress: Number(task.progress) }));
-      project.certifications = (certificationResult.data || []).filter(cert => cert.project_id === project.id).map(cert => ({ id: cert.id, projectId: cert.project_id, date: cert.certification_date, physicalProgress: Number(cert.physical_progress), financialProgress: Number(cert.financial_progress), certifiedBy: cert.certified_by, notes: cert.notes }));
+      const projectTasks = (taskResult.data || []).filter(task => task.project_id === project.id);
+      project.schedule = projectTasks.map(task => ({ id: task.id, taskName: task.name, startWeek: task.start_week, endWeek: task.end_week, progress: Number(task.progress), parentTaskId: task.parent_task_id || undefined }));
+      project.certifications = (certificationResult.data || []).filter(cert => cert.project_id === project.id).map(cert => ({ id: cert.id, projectId: cert.project_id, date: cert.certification_date, physicalProgress: Number(cert.physical_progress), financialProgress: Number(cert.financial_progress), certifiedBy: cert.certified_by, taskId: cert.task_id || undefined, taskName: projectTasks.find(task => task.id === cert.task_id)?.name, amount: cert.amount === null ? undefined : Number(cert.amount), invoiceNumber: cert.invoice_number || undefined, receiptNumber: cert.receipt_number || undefined, notes: cert.notes }));
     });
   }
 
@@ -4067,6 +4068,63 @@ app.put("/api/projects/:id", async (req: Request, res: Response) => {
   res.json(project);
 });
 
+// 12aa. Create, edit and remove individual project tasks without replacing the schedule.
+app.post("/api/projects/:id/tasks", async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (!supabaseAdmin || !tenantId) return res.status(503).json({ error: "Persistencia de tareas no disponible" });
+  const { data: project } = await supabaseAdmin.from("projects").select("id").eq("id", id).eq("tenant_id", tenantId).single();
+  if (!project) return res.status(404).json({ error: "Proyecto no encontrado" });
+
+  const name = String(req.body.taskName || "").trim();
+  const startWeek = Number(req.body.startWeek);
+  const endWeek = Number(req.body.endWeek);
+  const progress = Number(req.body.progress || 0);
+  const parentTaskId = req.body.parentTaskId || null;
+  if (!name) return res.status(400).json({ error: "El nombre de la tarea es obligatorio" });
+  if (!Number.isInteger(startWeek) || !Number.isInteger(endWeek) || startWeek < 1 || endWeek < startWeek) return res.status(400).json({ error: "El rango de semanas no es válido" });
+  if (!Number.isFinite(progress) || progress < 0 || progress > 100) return res.status(400).json({ error: "El avance debe estar entre 0 y 100" });
+  if (parentTaskId) {
+    const { data: parent } = await supabaseAdmin.from("project_tasks").select("id,project_id").eq("id", parentTaskId).eq("project_id", id).single();
+    if (!parent) return res.status(400).json({ error: "La tarea principal no pertenece a esta obra" });
+  }
+  const { count } = await supabaseAdmin.from("project_tasks").select("id", { count: "exact", head: true }).eq("project_id", id);
+  const { data: task, error } = await supabaseAdmin.from("project_tasks").insert({ project_id: id, name, start_week: startWeek, end_week: endWeek, progress, parent_task_id: parentTaskId, sort_order: count || 0 }).select("*").single();
+  if (error) return res.status(400).json({ error: error.message });
+  return res.status(201).json({ id: task.id, taskName: task.name, startWeek: task.start_week, endWeek: task.end_week, progress: Number(task.progress), parentTaskId: task.parent_task_id || undefined });
+});
+
+app.put("/api/projects/:id/tasks/:taskId", async (req: Request, res: Response) => {
+  const { id, taskId } = req.params;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (!supabaseAdmin || !tenantId) return res.status(503).json({ error: "Persistencia de tareas no disponible" });
+  const { data: task } = await supabaseAdmin.from("project_tasks").select("*,projects!inner(tenant_id)").eq("id", taskId).eq("project_id", id).eq("projects.tenant_id", tenantId).single();
+  if (!task) return res.status(404).json({ error: "Tarea no encontrada" });
+  const name = String(req.body.taskName || "").trim();
+  const startWeek = Number(req.body.startWeek);
+  const endWeek = Number(req.body.endWeek);
+  const progress = Number(req.body.progress);
+  if (!name) return res.status(400).json({ error: "El nombre de la tarea es obligatorio" });
+  if (!Number.isInteger(startWeek) || !Number.isInteger(endWeek) || startWeek < 1 || endWeek < startWeek) return res.status(400).json({ error: "El rango de semanas no es válido" });
+  if (!Number.isFinite(progress) || progress < 0 || progress > 100) return res.status(400).json({ error: "El avance debe estar entre 0 y 100" });
+  const { data: updated, error } = await supabaseAdmin.from("project_tasks").update({ name, start_week: startWeek, end_week: endWeek, progress }).eq("id", taskId).select("*").single();
+  if (error) return res.status(400).json({ error: error.message });
+  return res.json({ id: updated.id, taskName: updated.name, startWeek: updated.start_week, endWeek: updated.end_week, progress: Number(updated.progress), parentTaskId: updated.parent_task_id || undefined });
+});
+
+app.delete("/api/projects/:id/tasks/:taskId", async (req: Request, res: Response) => {
+  const { id, taskId } = req.params;
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (!supabaseAdmin || !tenantId) return res.status(503).json({ error: "Persistencia de tareas no disponible" });
+  const { data: task } = await supabaseAdmin.from("project_tasks").select("id,projects!inner(tenant_id)").eq("id", taskId).eq("project_id", id).eq("projects.tenant_id", tenantId).single();
+  if (!task) return res.status(404).json({ error: "Tarea no encontrada" });
+  const { count: certificationCount } = await supabaseAdmin.from("project_certifications").select("id", { count: "exact", head: true }).eq("task_id", taskId);
+  if (certificationCount) return res.status(409).json({ error: "No se puede eliminar una tarea que posee certificaciones" });
+  const { error } = await supabaseAdmin.from("project_tasks").delete().eq("id", taskId);
+  if (error) return res.status(400).json({ error: "No se pudo eliminar la tarea. Verifique que sus subtareas no tengan certificaciones." });
+  return res.status(204).end();
+});
+
 // 12b. Edit a budget line and its detail subitems
 app.put("/api/budget-lines/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -4259,23 +4317,33 @@ Return a JSON array of these tasks directly matching the schema.`;
 // 12d. Add Work progress certification
 app.post("/api/projects/:id/certifications", async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { date, physicalProgress, financialProgress, certifiedBy, notes } = req.body;
+  const { date, physicalProgress, financialProgress, certifiedBy, taskId, amount, invoiceNumber, receiptNumber, notes } = req.body;
   const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
   if (supabaseAdmin && tenantId) {
     const user = await getRequestAuthUser(req);
-    const { data: project } = await supabaseAdmin.from("projects").select("id").eq("id", id).eq("tenant_id", tenantId).single();
+    const { data: project } = await supabaseAdmin.from("projects").select("id,status").eq("id", id).eq("tenant_id", tenantId).single();
     if (!project || !user) return res.status(404).json({ error: "Proyecto no encontrado" });
+    if (project.status !== ProjectStatus.IN_PROGRESS) return res.status(409).json({ error: "Solo se puede certificar una obra que está en estado de ejecución" });
+    if (!taskId) return res.status(400).json({ error: "Debe seleccionar una tarea para certificar" });
+    const { data: task } = await supabaseAdmin.from("project_tasks").select("id,name,progress").eq("id", taskId).eq("project_id", id).single();
+    if (!task) return res.status(400).json({ error: "La tarea seleccionada no pertenece a esta obra" });
+    if (Number(task.progress) <= 0) return res.status(400).json({ error: "La tarea debe estar parcial o totalmente finalizada antes de certificarla" });
     const physical = Number(physicalProgress) || 0; const financial = Number(financialProgress) || 0;
-    const { data: certification, error } = await supabaseAdmin.from("project_certifications").insert({ project_id: id, certification_date: date || new Date().toISOString().split("T")[0], physical_progress: physical, financial_progress: financial, certified_by: certifiedBy || "Director de Obra", notes: notes || null, created_by: user.id }).select("*").single();
+    const certificationAmount = amount === "" || amount === undefined || amount === null ? null : Number(amount);
+    if (certificationAmount !== null && (!Number.isFinite(certificationAmount) || certificationAmount < 0)) return res.status(400).json({ error: "El monto de la certificación no es válido" });
+    const { data: certification, error } = await supabaseAdmin.from("project_certifications").insert({ project_id: id, task_id: taskId, certification_date: date || new Date().toISOString().split("T")[0], physical_progress: physical, financial_progress: financial, certified_by: certifiedBy || "Director de Obra", amount: certificationAmount, invoice_number: String(invoiceNumber || "").trim() || null, receipt_number: String(receiptNumber || "").trim() || null, notes: notes || null, created_by: user.id }).select("*").single();
     if (error) return res.status(400).json({ error: error.message });
     const { data: updatedProject, error: updateError } = await supabaseAdmin.from("projects").update({ physical_progress: physical, financial_progress: financial }).eq("id", id).eq("tenant_id", tenantId).select("*").single();
     if (updateError) { await supabaseAdmin.from("project_certifications").delete().eq("id", certification.id); return res.status(400).json({ error: updateError.message }); }
-    const mapped = mapDatabaseProject(updatedProject); mapped.certifications = [{ id: certification.id, projectId: id, date: certification.certification_date, physicalProgress: physical, financialProgress: financial, certifiedBy: certification.certified_by, notes: certification.notes }];
+    const mapped = mapDatabaseProject(updatedProject); mapped.certifications = [{ id: certification.id, projectId: id, date: certification.certification_date, physicalProgress: physical, financialProgress: financial, certifiedBy: certification.certified_by, taskId: certification.task_id, taskName: task.name, amount: certification.amount === null ? undefined : Number(certification.amount), invoiceNumber: certification.invoice_number || undefined, receiptNumber: certification.receipt_number || undefined, notes: certification.notes }];
     return res.status(201).json(mapped);
   }
   const project = projects.find(p => p.id === id);
   if (!project) {
     return res.status(404).json({ error: "Proyecto no encontrado" });
+  }
+  if (project.status !== ProjectStatus.IN_PROGRESS) {
+    return res.status(409).json({ error: "Solo se puede certificar una obra que está en estado de ejecución" });
   }
 
   const newCert = {
