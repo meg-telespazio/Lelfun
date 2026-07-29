@@ -763,6 +763,34 @@ function createReferenceBudgetLines(project: Project): BudgetLine[] {
   }));
 }
 
+function mapDatabaseProject(row: any): Project {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    code: row.code,
+    name: row.name,
+    status: row.status,
+    address: row.address || "",
+    city: row.city || "",
+    startDate: row.start_date,
+    plannedEndDate: row.planned_end_date,
+    surfaceM2: Number(row.surface_m2 || 0),
+    sellableSurfaceM2: Number(row.sellable_surface_m2 || 0),
+    floors: Number(row.floors || 0),
+    functionalUnits: Number(row.functional_units || 0),
+    baseCurrency: row.base_currency,
+    estimatedCostPerM2: Number(row.estimated_cost_per_m2 || 0),
+    estimatedTotalCost: Number(row.estimated_total_cost || 0),
+    physicalProgress: Number(row.physical_progress || 0),
+    financialProgress: Number(row.financial_progress || 0),
+    schedule: [],
+    projectType: row.project_type || "ConstrucciÃ³n",
+    constructionType: row.construction_type || "Casa",
+    description: row.description || "",
+    certifications: []
+  };
+}
+
 let budgetLines: BudgetLine[] = [
   ...createReferenceBudgetLines(projects.find(project => project.id === "proj-alvear")!)
 ];
@@ -2545,7 +2573,16 @@ app.get("/api/state", async (req: Request, res: Response) => {
   }
 
   // Filter global database based on the tenant context
-  const tenantProjects = projects.filter(p => p.tenantId === tenantId);
+  let tenantProjects = projects.filter(p => p.tenantId === tenantId);
+  if (supabaseAdmin) {
+    const { data: databaseProjects, error: projectsError } = await supabaseAdmin
+      .from("projects")
+      .select("*")
+      .eq("tenant_id", tenantId)
+      .order("created_at", { ascending: false });
+    if (projectsError) return res.status(500).json({ error: projectsError.message });
+    tenantProjects = (databaseProjects || []).map(mapDatabaseProject);
+  }
   const tenantProjectIds = tenantProjects.map(p => p.id);
 
   const tenantAccounts = accounts.filter(a => a.tenantId === tenantId);
@@ -2557,7 +2594,26 @@ app.get("/api/state", async (req: Request, res: Response) => {
   const tenantMovements = movements.filter(m => tenantAccountIds.includes(m.accountId));
   const tenantCashCounts = cashCounts.filter(cc => tenantAccountIds.includes(cc.accountId));
 
-  const tenantBudgetLines = budgetLines.filter(bl => tenantProjectIds.includes(bl.projectId));
+  let tenantBudgetLines = budgetLines.filter(bl => tenantProjectIds.includes(bl.projectId));
+  if (supabaseAdmin && tenantProjectIds.length > 0) {
+    const { data: databaseBudgetLines, error: budgetLinesError } = await supabaseAdmin
+      .from("budget_lines")
+      .select("*")
+      .in("project_id", tenantProjectIds)
+      .order("sort_order", { ascending: true });
+    if (budgetLinesError) return res.status(500).json({ error: budgetLinesError.message });
+    tenantBudgetLines = (databaseBudgetLines || []).map((line: any) => ({
+      id: line.id,
+      projectId: line.project_id,
+      categoryId: `budget-${line.id}`,
+      code: line.code,
+      name: line.name,
+      amount: Number(line.amount || 0),
+      incidence: Number(line.incidence || 0),
+      notes: line.notes || "",
+      subitems: []
+    }));
+  }
   if (tenantCategories.length === 0 && tenantBudgetLines.length > 0) {
     const categoriesByName = new Map<string, CostCategory>();
     tenantBudgetLines.forEach((line, index) => {
@@ -2572,8 +2628,8 @@ app.get("/api/state", async (req: Request, res: Response) => {
       }
     });
     tenantCategories = Array.from(categoriesByName.values());
-    costCategories.push(...tenantCategories);
-    persistAppState();
+    // Categories derived from persisted budget lines are response-only. Do not
+    // write server-local JSON from a Vercel function.
   }
   const tenantPurchaseRequests = purchaseRequests.filter(pr => pr.tenantId === tenantId);
   const tenantUnits = sellableUnits.filter(u => tenantProjectIds.includes(u.projectId));
@@ -3515,17 +3571,18 @@ app.post("/api/installments/:id/pay", async (req: Request, res: Response) => {
 });
 
 // 12. Add Project
-app.post("/api/projects", (req: Request, res: Response) => {
+app.post("/api/projects", async (req: Request, res: Response) => {
   const pData = req.body;
-  if (!pData.tenantId || !pData.name) {
+  const tenantId = (req as Request & { authTenantId?: string }).authTenantId;
+  if (!tenantId || !pData.name) {
     return res.status(400).json({ error: "Missing required project fields" });
   }
 
   const generatedCode = pData.code || `OB-${Date.now().toString().slice(-4)}`;
 
-  const newProj: Project = {
+  const projectDraft: Project = {
     id: `proj-${Date.now()}`,
-    tenantId: pData.tenantId,
+    tenantId,
     code: generatedCode,
     name: pData.name,
     status: ProjectStatus.DRAFT,
@@ -3549,11 +3606,56 @@ app.post("/api/projects", (req: Request, res: Response) => {
     certifications: []
   };
 
-  projects.push(newProj);
+  if (!supabaseAdmin) return res.status(503).json({ error: "Supabase no estÃ¡ configurado" });
+  const user = await getRequestAuthUser(req);
+  if (!user) return res.status(401).json({ error: "SesiÃ³n invÃ¡lida" });
 
-  // Initialize the complete reference budget for the selected construction type.
-  budgetLines.push(...createReferenceBudgetLines(newProj));
-  persistAppState();
+  const { data: databaseProject, error: projectError } = await supabaseAdmin
+    .from("projects")
+    .insert({
+      tenant_id: tenantId,
+      code: projectDraft.code,
+      name: projectDraft.name,
+      status: projectDraft.status,
+      address: projectDraft.address,
+      city: projectDraft.city,
+      start_date: projectDraft.startDate,
+      planned_end_date: projectDraft.plannedEndDate,
+      surface_m2: projectDraft.surfaceM2,
+      sellable_surface_m2: projectDraft.sellableSurfaceM2,
+      floors: projectDraft.floors,
+      functional_units: projectDraft.functionalUnits,
+      base_currency: projectDraft.baseCurrency,
+      estimated_cost_per_m2: projectDraft.estimatedCostPerM2,
+      estimated_total_cost: projectDraft.estimatedTotalCost,
+      physical_progress: 0,
+      financial_progress: 0,
+      project_type: projectDraft.projectType,
+      construction_type: projectDraft.constructionType,
+      description: projectDraft.description,
+      created_by: user.id
+    })
+    .select("*")
+    .single();
+  if (projectError) return res.status(400).json({ error: projectError.message });
+
+  const newProj = mapDatabaseProject(databaseProject);
+  const referenceLines = createReferenceBudgetLines(newProj);
+  const { error: budgetError } = await supabaseAdmin.from("budget_lines").insert(
+    referenceLines.map((line, index) => ({
+      project_id: newProj.id,
+      code: line.code,
+      name: line.name,
+      incidence: line.incidence,
+      amount: line.amount,
+      notes: line.notes || null,
+      sort_order: index
+    }))
+  );
+  if (budgetError) {
+    await supabaseAdmin.from("projects").delete().eq("id", newProj.id);
+    return res.status(400).json({ error: budgetError.message });
+  }
 
   res.status(201).json(newProj);
 });
